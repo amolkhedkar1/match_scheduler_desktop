@@ -1,6 +1,25 @@
-<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<UserControl x:Class="CricketScheduler.App.Views.LeagueSelectionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Grid>
-        <TextBlock Text="League Selection" FontSize="24" />
-    </Grid>
+    <Border BorderBrush="#DDD" BorderThickness="1" CornerRadius="6" Padding="16" Background="#FAFAFA">
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="420">
+            <TextBlock Text="Cricket Tournament Scheduler" FontSize="22" FontWeight="Bold"
+                       HorizontalAlignment="Center" Margin="0,0,0,6"/>
+            <TextBlock Text="Select an existing league or create a new one to get started."
+                       HorizontalAlignment="Center" Foreground="#555" Margin="0,0,0,24" TextWrapping="Wrap"/>
+
+            <TextBlock Text="Select League" FontWeight="SemiBold" Margin="0,0,0,4"/>
+            <ComboBox ItemsSource="{Binding LeagueNames}" SelectedItem="{Binding SelectedLeagueName}"
+                      Margin="0,0,0,8"/>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                <Button Content="Open League" Command="{Binding OpenLeagueCommand}"
+                        FontWeight="SemiBold" Padding="14,8" Margin="0,0,10,0"/>
+                <Button Content="New League" Command="{Binding CreateLeagueCommand}"
+                        Padding="14,8" Margin="0,0,10,0"/>
+                <Button Content="Delete League" Command="{Binding DeleteLeagueCommand}"
+                        Padding="14,8"/>
+            </StackPanel>
+        </StackPanel>
+    </Border>
 </UserControl>

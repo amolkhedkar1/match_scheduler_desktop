@@ -1,6 +1,101 @@
-<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<UserControl x:Class="CricketScheduler.App.Views.DivisionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Grid>
-        <TextBlock Text="Divisions and Teams" FontSize="24" />
+    <UserControl.Resources>
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,6,0,2"/>
+        </Style>
+        <Style x:Key="FieldInput" TargetType="TextBox">
+            <Setter Property="Padding" Value="4"/>
+            <Setter Property="Margin" Value="0,0,0,2"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="300"/>
+            <ColumnDefinition Width="12"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Left: Divisions panel -->
+        <StackPanel Grid.Column="0">
+            <TextBlock Text="Divisions" Style="{StaticResource SectionHeader}"/>
+
+            <ListBox ItemsSource="{Binding Divisions}" SelectedItem="{Binding SelectedDivision}"
+                     Height="220" DisplayMemberPath="Name"/>
+
+            <Separator Margin="0,10"/>
+            <TextBlock Text="Add New Division" Style="{StaticResource SectionHeader}"/>
+
+            <TextBlock Text="Division Name" Style="{StaticResource FieldLabel}"/>
+            <TextBox Text="{Binding NewDivisionName, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource FieldInput}"/>
+
+            <CheckBox Content="Round Robin (all teams play each other)" IsChecked="{Binding NewDivisionIsRoundRobin}" Margin="0,6,0,4"/>
+
+            <DockPanel LastChildFill="False" Margin="0,0,0,8">
+                <TextBlock Text="Matches per team:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBox Text="{Binding NewDivisionMatchesPerTeam, UpdateSourceTrigger=PropertyChanged}"
+                         Width="55" Style="{StaticResource FieldInput}" ToolTip="Used only when not Round Robin"/>
+            </DockPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                <Button Content="Add Division" Command="{Binding AddDivisionCommand}" Padding="10,5" Margin="0,0,8,0"/>
+                <Button Content="Remove Selected" Command="{Binding RemoveDivisionCommand}" Padding="10,5"/>
+            </StackPanel>
+
+            <Separator Margin="0,12"/>
+            <Button Content="Save Divisions" Command="{Binding SaveDivisionsCommand}"
+                    FontWeight="SemiBold" Padding="12,7" HorizontalAlignment="Left"
+                    Background="#4CAF50" Foreground="White"/>
+        </StackPanel>
+
+        <!-- Right: Teams panel -->
+        <Grid Grid.Column="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Style="{StaticResource SectionHeader}">
+                <Run Text="Teams in: "/>
+                <Run Text="{Binding SelectedDivisionName}" FontStyle="Italic"/>
+            </TextBlock>
+
+            <ListBox Grid.Row="1" ItemsSource="{Binding TeamsInSelectedDivision}"
+                     SelectedItem="{Binding SelectedTeam}" DisplayMemberPath="Name"
+                     MinHeight="200"/>
+
+            <StackPanel Grid.Row="2" Margin="0,10,0,0">
+                <TextBlock Text="Add New Team" Style="{StaticResource SectionHeader}"/>
+                <DockPanel LastChildFill="True" Margin="0,0,0,6">
+                    <Button DockPanel.Dock="Right" Content="Add Team" Command="{Binding AddTeamCommand}"
+                            Padding="10,5" Margin="8,0,0,0"/>
+                    <TextBox Text="{Binding NewTeamName, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource FieldInput}" ToolTip="Team name"/>
+                </DockPanel>
+                <Button Content="Remove Selected Team" Command="{Binding RemoveTeamCommand}"
+                        HorizontalAlignment="Left" Padding="8,4"/>
+            </StackPanel>
+
+            <Border Grid.Row="3" BorderBrush="#DDD" BorderThickness="1" CornerRadius="4"
+                    Padding="10" Margin="0,14,0,0" Background="#FAFAFA">
+                <StackPanel>
+                    <TextBlock Text="Bulk Import" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBlock Text="CSV format: DivisionName,TeamName (one per line, with header row)"
+                               Foreground="#666" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                    <Button Content="Import Divisions CSV" Command="{Binding ImportDivisionsCommand}"
+                            HorizontalAlignment="Left" Padding="10,5"/>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </UserControl>

@@ -16,6 +16,8 @@ public partial class MainWindow : Window
         var schedulingService = new SchedulingService();
         var exportService = new ExportService(csvService);
 
-        DataContext = new MainViewModel(leagueService, schedulingService, exportService, dataRoot);
+        var vm = new MainViewModel(leagueService, schedulingService, exportService, dataRoot);
+        vm.OwnerWindow = this;
+        DataContext = vm;
     }
 }

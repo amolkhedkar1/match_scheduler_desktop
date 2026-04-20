@@ -143,6 +143,30 @@ public sealed class LeagueService
             EndTime = c.EndTime?.ToString("HH:mm") ?? string.Empty
         });
         await _csv.WriteAsync(Path.Combine(path, "constraints.csv"), constraints);
+
+        if (league.Matches.Count > 0)
+        {
+            var schedule = league.Matches.Select(m => new ScheduleCsv
+            {
+                Number = m.Sequence,
+                Series = m.TournamentName,
+                Division = m.DivisionName,
+                MatchType = m.MatchType,
+                Date = m.Date?.ToString("MM/dd/yyyy") ?? string.Empty,
+                Time = m.Slot?.Start.ToString("h:mm tt") ?? string.Empty,
+                TeamOne = m.TeamOne,
+                TeamTwo = m.TeamTwo,
+                Ground = m.Ground?.Name ?? string.Empty,
+                UmpireOne = m.UmpireOne ?? string.Empty,
+                UmpireTwo = m.UmpireTwo ?? string.Empty,
+                UmpireThree = m.UmpireThree ?? string.Empty,
+                UmpireFour = m.UmpireFour ?? string.Empty,
+                MatchManager = m.MatchManager ?? string.Empty,
+                Scorer1 = m.ScorerOne ?? string.Empty,
+                Scorer2 = m.ScorerTwo ?? string.Empty
+            });
+            await _csv.WriteAsync(Path.Combine(path, "schedule.csv"), schedule);
+        }
     }
 
     private string GetLeaguePath(string name) => Path.Combine(_root, name);

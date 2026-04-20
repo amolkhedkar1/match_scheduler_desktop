@@ -1,6 +1,106 @@
-<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<UserControl x:Class="CricketScheduler.App.Views.TournamentView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Grid>
-        <TextBlock Text="Tournament Setup" FontSize="24" />
-    </Grid>
+    <UserControl.Resources>
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,6,0,2"/>
+        </Style>
+        <Style x:Key="FieldInput" TargetType="TextBox">
+            <Setter Property="Padding" Value="4"/>
+            <Setter Property="Margin" Value="0,0,0,2"/>
+        </Style>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="16"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: Tournament basic info + blackout dates -->
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Tournament Details" Style="{StaticResource SectionHeader}"/>
+
+                <TextBlock Text="Tournament Name" Style="{StaticResource FieldLabel}"/>
+                <TextBox Text="{Binding TournamentName, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource FieldInput}"/>
+
+                <TextBlock Text="Start Date (yyyy-MM-dd)" Style="{StaticResource FieldLabel}"/>
+                <TextBox Text="{Binding TournamentStartDate, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource FieldInput}"/>
+
+                <TextBlock Text="End Date (yyyy-MM-dd)" Style="{StaticResource FieldLabel}"/>
+                <TextBox Text="{Binding TournamentEndDate, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource FieldInput}"/>
+
+                <Separator Margin="0,12"/>
+                <TextBlock Text="Blackout / Discarded Dates" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="Matches will not be scheduled on these dates." Foreground="#666" FontSize="11" Margin="0,0,0,6"/>
+
+                <DockPanel LastChildFill="True" Margin="0,0,0,6">
+                    <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddDiscardedDateCommand}"
+                            Padding="10,4" Margin="6,0,0,0"/>
+                    <TextBox Text="{Binding NewDiscardedDate, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource FieldInput}" ToolTip="Format: yyyy-MM-dd"/>
+                </DockPanel>
+
+                <ListBox ItemsSource="{Binding DiscardedDates}" Height="150"
+                         SelectedItem="{Binding SelectedDiscardedDate}"/>
+                <Button Content="Remove Selected Date" Command="{Binding RemoveDiscardedDateCommand}"
+                        HorizontalAlignment="Left" Padding="8,4" Margin="0,4,0,0"/>
+
+                <Separator Margin="0,16"/>
+                <Button Content="Save Tournament" Command="{Binding SaveTournamentCommand}"
+                        FontWeight="SemiBold" Padding="14,7" HorizontalAlignment="Left"
+                        Background="#4CAF50" Foreground="White"/>
+            </StackPanel>
+
+            <!-- Right: Grounds + Time Slots -->
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="Grounds" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="Available playing grounds for this tournament." Foreground="#666" FontSize="11" Margin="0,0,0,6"/>
+
+                <DockPanel LastChildFill="True" Margin="0,0,0,6">
+                    <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddGroundCommand}"
+                            Padding="10,4" Margin="6,0,0,0"/>
+                    <TextBox Text="{Binding NewGroundName, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource FieldInput}" ToolTip="e.g. OCG, Central Park"/>
+                </DockPanel>
+
+                <ListBox ItemsSource="{Binding GroundNames}" Height="150"
+                         SelectedItem="{Binding SelectedGroundName}"/>
+                <Button Content="Remove Selected Ground" Command="{Binding RemoveGroundCommand}"
+                        HorizontalAlignment="Left" Padding="8,4" Margin="0,4,0,0"/>
+
+                <Separator Margin="0,16"/>
+                <TextBlock Text="Match Time Slots" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="Define all possible start/end times for matches." Foreground="#666" FontSize="11" Margin="0,0,0,6"/>
+
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition/>
+                        <ColumnDefinition Width="8"/>
+                        <ColumnDefinition/>
+                        <ColumnDefinition Width="8"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox Grid.Column="0" Text="{Binding NewSlotStart, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource FieldInput}" ToolTip="Start time: HH:mm (e.g. 07:00)"/>
+                    <TextBox Grid.Column="2" Text="{Binding NewSlotEnd, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource FieldInput}" ToolTip="End time: HH:mm (e.g. 09:00)"/>
+                    <Button Grid.Column="4" Content="Add Slot" Command="{Binding AddTimeSlotCommand}" Padding="8,4"/>
+                </Grid>
+
+                <ListBox ItemsSource="{Binding TimeSlotDisplays}" Height="150"
+                         SelectedItem="{Binding SelectedTimeSlotDisplay}"/>
+                <Button Content="Remove Selected Slot" Command="{Binding RemoveTimeSlotCommand}"
+                        HorizontalAlignment="Left" Padding="8,4" Margin="0,4,0,0"/>
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
 </UserControl>
