@@ -13,6 +13,7 @@ public partial class MainViewModel : ObservableObject
     private readonly LeagueService _leagueService;
     private readonly SchedulingService _schedulingService;
     private readonly ExportService _exportService;
+    private readonly string _leaguesRoot;
 
     [ObservableProperty]
     private string? selectedLeagueName;
@@ -20,14 +21,23 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private League? currentLeague;
 
+    [ObservableProperty]
+    private string tournamentNameDisplay = "No league loaded";
+
+    [ObservableProperty]
+    private string tournamentDateRangeDisplay = "N/A";
+
     public ObservableCollection<string> LeagueNames { get; } = [];
     public ObservableCollection<ScheduleRowViewModel> ScheduledMatches { get; } = [];
+    public ObservableCollection<string> DivisionSummaries { get; } = [];
+    public ObservableCollection<string> ConstraintSummaries { get; } = [];
 
-    public MainViewModel(LeagueService leagueService, SchedulingService schedulingService, ExportService exportService)
+    public MainViewModel(LeagueService leagueService, SchedulingService schedulingService, ExportService exportService, string leaguesRoot)
     {
         _leagueService = leagueService;
         _schedulingService = schedulingService;
         _exportService = exportService;
+        _leaguesRoot = leaguesRoot;
 
         RefreshLeagueNames();
         EnsureSampleLeagueAndLoadAsync().GetAwaiter().GetResult();
@@ -52,6 +62,7 @@ public partial class MainViewModel : ObservableObject
 
         CurrentLeague = await _leagueService.LoadLeagueAsync(SelectedLeagueName);
         RenderSchedule();
+        RefreshLeagueDetails();
     }
 
     [RelayCommand]
@@ -66,6 +77,7 @@ public partial class MainViewModel : ObservableObject
         SelectedLeagueName = null;
         CurrentLeague = null;
         ScheduledMatches.Clear();
+        RefreshLeagueDetails();
         RefreshLeagueNames();
     }
 
@@ -81,7 +93,7 @@ public partial class MainViewModel : ObservableObject
         var result = _schedulingService.Generate(CurrentLeague);
         CurrentLeague.Matches = result.ScheduledMatches.ToList();
         await _leagueService.SaveLeagueAsync(CurrentLeague);
-        await _exportService.ExportScheduleAsync(CurrentLeague.Matches, Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", "leagues", CurrentLeague.Name, "schedule.csv"));
+        await _exportService.ExportScheduleAsync(CurrentLeague.Matches, GetScheduleOutputPath(CurrentLeague.Name));
         RenderSchedule();
 
         if (result.UnscheduledMatches.Count > 0)
@@ -99,7 +111,7 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        var output = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", "leagues", CurrentLeague.Name, "schedule.csv");
+        var output = GetScheduleOutputPath(CurrentLeague.Name);
         await _exportService.ExportScheduleAsync(CurrentLeague.Matches, output);
         MessageBox.Show($"Exported: {output}", "Export");
     }
@@ -127,7 +139,13 @@ public partial class MainViewModel : ObservableObject
         {
             CurrentLeague = await _leagueService.LoadLeagueAsync(SelectedLeagueName);
             RenderSchedule();
+            RefreshLeagueDetails();
         }
+    }
+
+    private string GetScheduleOutputPath(string leagueName)
+    {
+        return Path.Combine(_leaguesRoot, leagueName, "schedule.csv");
     }
 
     private void RenderSchedule()
@@ -152,6 +170,35 @@ public partial class MainViewModel : ObservableObject
                 UmpireOne = match.UmpireOne ?? string.Empty,
                 UmpireTwo = match.UmpireTwo ?? string.Empty
             });
+        }
+    }
+
+    private void RefreshLeagueDetails()
+    {
+        DivisionSummaries.Clear();
+        ConstraintSummaries.Clear();
+
+        if (CurrentLeague?.Tournament is null)
+        {
+            TournamentNameDisplay = "No league loaded";
+            TournamentDateRangeDisplay = "N/A";
+            return;
+        }
+
+        TournamentNameDisplay = CurrentLeague.Tournament.Name;
+        TournamentDateRangeDisplay = $"{CurrentLeague.Tournament.StartDate:yyyy-MM-dd} to {CurrentLeague.Tournament.EndDate:yyyy-MM-dd}";
+
+        foreach (var division in CurrentLeague.Divisions)
+        {
+            var teamCount = division.Teams.Count;
+            DivisionSummaries.Add($"{division.Name} ({teamCount} teams)");
+        }
+
+        foreach (var request in CurrentLeague.Constraints.OrderBy(c => c.Date).ThenBy(c => c.TeamName))
+        {
+            var start = request.StartTime?.ToString("HH:mm") ?? "--";
+            var end = request.EndTime?.ToString("HH:mm") ?? "--";
+            ConstraintSummaries.Add($"{request.Date:yyyy-MM-dd} | {request.TeamName} | {start}-{end}");
         }
     }
 }

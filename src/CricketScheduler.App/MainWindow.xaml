@@ -5,37 +5,85 @@
         Height="720"
         Width="1200">
     <Grid Margin="12">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="250"/>
-            <ColumnDefinition Width="12"/>
-            <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
 
-        <StackPanel>
-            <TextBlock Text="Leagues" FontSize="18" FontWeight="Bold" Margin="0,0,0,8"/>
-            <ComboBox ItemsSource="{Binding LeagueNames}" SelectedItem="{Binding SelectedLeagueName}" Margin="0,0,0,8"/>
-            <Button Content="Create League" Command="{Binding CreateLeagueCommand}" Margin="0,0,0,6"/>
-            <Button Content="Open League" Command="{Binding OpenLeagueCommand}" Margin="0,0,0,6"/>
-            <Button Content="Delete League" Command="{Binding DeleteLeagueCommand}" Margin="0,0,0,12"/>
-
-            <Button Content="Generate Schedule" Command="{Binding GenerateScheduleCommand}" Margin="0,0,0,6"/>
-            <Button Content="Export CSV" Command="{Binding ExportScheduleCommand}" />
-        </StackPanel>
-
-        <Border Grid.Column="2" BorderBrush="#DDD" BorderThickness="1" CornerRadius="6" Padding="10">
-            <DataGrid ItemsSource="{Binding ScheduledMatches}" AutoGenerateColumns="False" IsReadOnly="True">
-                <DataGrid.Columns>
-                    <DataGridTextColumn Header="#" Binding="{Binding Sequence}" Width="50"/>
-                    <DataGridTextColumn Header="Division" Binding="{Binding DivisionName}" Width="120"/>
-                    <DataGridTextColumn Header="Date" Binding="{Binding Date, StringFormat=d}" Width="100"/>
-                    <DataGridTextColumn Header="Time" Binding="{Binding TimeRange}" Width="120"/>
-                    <DataGridTextColumn Header="Team One" Binding="{Binding TeamOne}" Width="*"/>
-                    <DataGridTextColumn Header="Team Two" Binding="{Binding TeamTwo}" Width="*"/>
-                    <DataGridTextColumn Header="Ground" Binding="{Binding GroundName}" Width="140"/>
-                    <DataGridTextColumn Header="Umpire 1" Binding="{Binding UmpireOne}" Width="120"/>
-                    <DataGridTextColumn Header="Umpire 2" Binding="{Binding UmpireTwo}" Width="120"/>
-                </DataGrid.Columns>
-            </DataGrid>
+        <Border BorderBrush="#DDD" BorderThickness="1" CornerRadius="6" Padding="10">
+            <DockPanel LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left" Text="Leagues" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <ComboBox DockPanel.Dock="Left" Width="260" ItemsSource="{Binding LeagueNames}" SelectedItem="{Binding SelectedLeagueName}" Margin="0,0,10,0"/>
+                <Button DockPanel.Dock="Left" Content="Create League" Command="{Binding CreateLeagueCommand}" Margin="0,0,6,0"/>
+                <Button DockPanel.Dock="Left" Content="Open League" Command="{Binding OpenLeagueCommand}" Margin="0,0,6,0"/>
+                <Button DockPanel.Dock="Left" Content="Delete League" Command="{Binding DeleteLeagueCommand}" />
+            </DockPanel>
         </Border>
+
+        <TabControl Grid.Row="2">
+            <TabItem Header="Tournament">
+                <Border BorderBrush="#DDD" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,6,0,0">
+                    <StackPanel>
+                        <TextBlock Text="Tournament Setup" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                        <TextBlock Text="Name" FontWeight="SemiBold"/>
+                        <TextBox Text="{Binding TournamentNameDisplay}" IsReadOnly="True" Margin="0,4,0,12"/>
+                        <TextBlock Text="Date Range" FontWeight="SemiBold"/>
+                        <TextBox Text="{Binding TournamentDateRangeDisplay}" IsReadOnly="True" Margin="0,4,0,12"/>
+                        <TextBlock Text="Use 'Open League' to load tournament inputs and this screen will refresh." Foreground="#666"/>
+                    </StackPanel>
+                </Border>
+            </TabItem>
+
+            <TabItem Header="Divisions">
+                <Border BorderBrush="#DDD" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,6,0,0">
+                    <StackPanel>
+                        <TextBlock Text="Divisions and Teams" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                        <ListBox ItemsSource="{Binding DivisionSummaries}" Height="420"/>
+                    </StackPanel>
+                </Border>
+            </TabItem>
+
+            <TabItem Header="Requests">
+                <Border BorderBrush="#DDD" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,6,0,0">
+                    <StackPanel>
+                        <TextBlock Text="Scheduling Requests" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                        <ListBox ItemsSource="{Binding ConstraintSummaries}" Height="420"/>
+                    </StackPanel>
+                </Border>
+            </TabItem>
+
+            <TabItem Header="Scheduler">
+                <Grid Margin="0,6,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" LastChildFill="False">
+                        <TextBlock DockPanel.Dock="Left" Text="Scheduler Workspace" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <Button DockPanel.Dock="Right" Content="Export CSV" Command="{Binding ExportScheduleCommand}" Margin="8,0,0,0"/>
+                        <Button DockPanel.Dock="Right" Content="Generate Schedule" Command="{Binding GenerateScheduleCommand}"/>
+                    </DockPanel>
+
+                    <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" CornerRadius="6" Padding="10">
+                        <DataGrid ItemsSource="{Binding ScheduledMatches}" AutoGenerateColumns="False" IsReadOnly="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="#" Binding="{Binding Sequence}" Width="50"/>
+                                <DataGridTextColumn Header="Division" Binding="{Binding DivisionName}" Width="120"/>
+                                <DataGridTextColumn Header="Date" Binding="{Binding Date, StringFormat=d}" Width="100"/>
+                                <DataGridTextColumn Header="Time" Binding="{Binding TimeRange}" Width="120"/>
+                                <DataGridTextColumn Header="Team One" Binding="{Binding TeamOne}" Width="*"/>
+                                <DataGridTextColumn Header="Team Two" Binding="{Binding TeamTwo}" Width="*"/>
+                                <DataGridTextColumn Header="Ground" Binding="{Binding GroundName}" Width="140"/>
+                                <DataGridTextColumn Header="Umpire 1" Binding="{Binding UmpireOne}" Width="120"/>
+                                <DataGridTextColumn Header="Umpire 2" Binding="{Binding UmpireTwo}" Width="120"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
     </Grid>
 </Window>

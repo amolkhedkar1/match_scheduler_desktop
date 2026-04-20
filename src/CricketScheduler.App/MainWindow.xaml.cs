@@ -1,7 +1,6 @@
 using System.Windows;
 using CricketScheduler.App.Services;
 using CricketScheduler.App.ViewModels;
-using System.IO;
 
 namespace CricketScheduler.App;
 
@@ -11,12 +10,12 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        var dataRoot = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", "leagues");
+        var dataRoot = AppPaths.ResolveLeaguesRoot();
         var csvService = new CsvService();
         var leagueService = new LeagueService(dataRoot, csvService);
         var schedulingService = new SchedulingService();
         var exportService = new ExportService(csvService);
 
-        DataContext = new MainViewModel(leagueService, schedulingService, exportService);
+        DataContext = new MainViewModel(leagueService, schedulingService, exportService, dataRoot);
     }
 }
