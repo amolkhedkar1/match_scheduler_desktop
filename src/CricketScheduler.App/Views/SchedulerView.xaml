@@ -1,96 +1,508 @@
 <UserControl x:Class="CricketScheduler.App.Views.SchedulerView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Root">
     <UserControl.Resources>
-        <Style x:Key="SectionHeader" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="15"/>
+        <Style x:Key="Hdr" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Margin" Value="0,0,0,8"/>
+            <Setter Property="Margin" Value="0,0,0,4"/>
+        </Style>
+        <Style x:Key="Pill" TargetType="Border">
+            <Setter Property="BorderBrush" Value="#DDD"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="Background" Value="#FAFAFA"/>
+            <Setter Property="Margin" Value="0,0,0,6"/>
+        </Style>
+        <Style x:Key="ActionBtn" TargetType="Button">
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+        </Style>
+        <!-- DataGrid with sorting enabled via column headers -->
+        <Style x:Key="SortableGrid" TargetType="DataGrid">
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="CanUserResizeColumns" Value="True"/>
+            <Setter Property="CanUserSortColumns" Value="True"/>
+            <Setter Property="SelectionMode" Value="Extended"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="ColumnHeaderStyle">
+                <Setter.Value>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="FontWeight" Value="SemiBold"/>
+                        <Setter Property="Padding" Value="6,4"/>
+                        <Setter Property="Background" Value="#F0F0F0"/>
+                        <Setter Property="BorderBrush" Value="#DDD"/>
+                        <Setter Property="BorderThickness" Value="0,0,1,1"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                        <Setter Property="ToolTip" Value="Click to sort · Shift+click for multi-sort"/>
+                    </Style>
+                </Setter.Value>
+            </Setter>
         </Style>
     </UserControl.Resources>
 
-    <Grid Margin="12">
+    <!-- Outer ScrollViewer to prevent clipping on small screens -->
+    <Grid Margin="10">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="10"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="10"/>
-            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>  <!-- toolbar -->
+            <RowDefinition Height="Auto"/>  <!-- filter bar -->
+            <RowDefinition Height="Auto"/>  <!-- forbidden slots expander -->
+            <RowDefinition Height="3*"/>    <!-- scheduled grid -->
+            <RowDefinition Height="Auto"/>  <!-- splitter label -->
+            <RowDefinition Height="2*"/>    <!-- unscheduled panel -->
+            <RowDefinition Height="Auto"/>  <!-- move panel -->
         </Grid.RowDefinitions>
 
-        <!-- Action toolbar -->
-        <DockPanel Grid.Row="0" LastChildFill="False">
-            <TextBlock DockPanel.Dock="Left" Text="Schedule"
-                       Style="{StaticResource SectionHeader}" VerticalAlignment="Center" Margin="0,0,16,0"/>
-            <Button DockPanel.Dock="Left" Content="Generate Schedule"
-                    Command="{Binding GenerateScheduleCommand}"
-                    FontWeight="SemiBold" Padding="14,7" Margin="0,0,8,0"/>
-            <Button DockPanel.Dock="Left" Content="Export CSV"
-                    Command="{Binding ExportScheduleCommand}"
-                    Padding="12,7" Margin="0,0,8,0"/>
-            <Button DockPanel.Dock="Left" Content="Import Matches"
-                    Command="{Binding ImportMatchesCommand}"
-                    Padding="12,7" Margin="0,0,8,0"/>
-            <TextBlock DockPanel.Dock="Right" Text="{Binding ScheduleStats}"
-                       Foreground="#555" FontStyle="Italic" VerticalAlignment="Center"/>
-        </DockPanel>
+        <!-- ══ TOOLBAR ══════════════════════════════════════════════════════ -->
+        <Border Grid.Row="0" Style="{StaticResource Pill}">
+            <WrapPanel>
+                <!-- Schedule generation -->
+                <Button Content="⚡ Generate" Command="{Binding GenerateScheduleCommand}"
+                        FontWeight="SemiBold" Style="{StaticResource ActionBtn}"/>
+                <Button Content="🔄 Reschedule" Command="{Binding RescheduleCommand}"
+                        Style="{StaticResource ActionBtn}"
+                        ToolTip="Re-run scheduler keeping Fixed matches; respects Forbidden Slots"/>
+                <Button Content="🔁 Backtrack" Command="{Binding BacktrackRescheduleCommand}"
+                        Style="{StaticResource ActionBtn}"
+                        ToolTip="Try to schedule unscheduled matches with relaxed constraints"/>
 
-        <!-- Filter bar -->
-        <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" CornerRadius="6"
-                Padding="12,8" Background="#FAFAFA">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="Filters:" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <Separator Width="1" Height="22" Background="#CCC" Margin="4,0"/>
 
-                <TextBlock Text="Division:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <ComboBox Width="160" ItemsSource="{Binding FilterDivisions}"
-                          SelectedItem="{Binding FilterDivision}" Margin="0,0,14,0"/>
+                <!-- Export -->
+                <Button Content="📤 Export All" Command="{Binding ExportScheduleCommand}"
+                        Style="{StaticResource ActionBtn}" ToolTip="Export full schedule to timestamped CSV in /outputs"/>
+                <Button Content="📤 Export Filtered" Command="{Binding ExportFilteredScheduleCommand}"
+                        Style="{StaticResource ActionBtn}" ToolTip="Export only visible rows"/>
+                <Button Content="📤 Export Unscheduled" Command="{Binding ExportUnscheduledCommand}"
+                        Style="{StaticResource ActionBtn}"/>
 
-                <TextBlock Text="Team:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <ComboBox Width="190" ItemsSource="{Binding FilterTeams}"
-                          SelectedItem="{Binding FilterTeam}" Margin="0,0,14,0"/>
+                <Separator Width="1" Height="22" Background="#CCC" Margin="4,0"/>
 
-                <TextBlock Text="Ground:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <ComboBox Width="160" ItemsSource="{Binding FilterGrounds}"
-                          SelectedItem="{Binding FilterGround}" Margin="0,0,14,0"/>
+                <!-- Row operations -->
+                <Button Content="📂 Import Matches" Command="{Binding ImportMatchesCommand}"
+                        Style="{StaticResource ActionBtn}"/>
+                <Button Content="📌 Toggle Fixed" Style="{StaticResource ActionBtn}"
+                        Command="{Binding ToggleFixedSelectedCommand}"
+                        CommandParameter="{Binding ElementName=MatchGrid}"
+                        ToolTip="Mark / unmark selected matches as fixed (cannot be rescheduled)"/>
+                <Button Content="📋 Copy" Style="{StaticResource ActionBtn}"
+                        Command="{Binding CopySelectedMatchesCommand}"
+                        CommandParameter="{Binding ElementName=MatchGrid}"/>
+                <Button Content="📋 Paste" Style="{StaticResource ActionBtn}"
+                        Command="{Binding PasteMatchesCommand}"/>
+                <Button Content="🗑 Delete" Style="{StaticResource ActionBtn}"
+                        Command="{Binding DeleteSelectedMatchesCommand}"
+                        CommandParameter="{Binding ElementName=MatchGrid}"/>
 
-                <Button Content="Clear Filters" Command="{Binding ClearFiltersCommand}" Padding="10,4"/>
-            </StackPanel>
+                <Separator Width="1" Height="22" Background="#CCC" Margin="4,0"/>
+
+                <Button Content="↔ Analyze Move" Style="{StaticResource ActionBtn}"
+                        Command="{Binding AnalyzeMoveCommand}"
+                        CommandParameter="{Binding SelectedMatch}"
+                        ToolTip="Show alternative slots for selected match"/>
+
+                <TextBlock Text="{Binding ScheduleStats}" VerticalAlignment="Center"
+                           Foreground="#555" FontStyle="Italic" Margin="8,0,0,0"/>
+            </WrapPanel>
         </Border>
 
-        <!-- Schedule DataGrid -->
-        <DataGrid Grid.Row="4"
+        <!-- ══ FILTER BAR — Division / Team / Ground / Free text ════════════ -->
+        <Border Grid.Row="1" Style="{StaticResource Pill}">
+            <WrapPanel>
+                <TextBlock Text="Division:" VerticalAlignment="Center" Margin="0,0,4,0" FontWeight="SemiBold"/>
+                <ComboBox Width="140" ItemsSource="{Binding FilterDivisions}"
+                          SelectedItem="{Binding FilterDivision}" Margin="0,0,10,0"/>
+                <TextBlock Text="Team:" VerticalAlignment="Center" Margin="0,0,4,0" FontWeight="SemiBold"/>
+                <ComboBox Width="170" ItemsSource="{Binding FilterTeams}"
+                          SelectedItem="{Binding FilterTeam}" Margin="0,0,10,0"/>
+                <TextBlock Text="Ground:" VerticalAlignment="Center" Margin="0,0,4,0" FontWeight="SemiBold"/>
+                <ComboBox Width="140" ItemsSource="{Binding FilterGrounds}"
+                          SelectedItem="{Binding FilterGround}" Margin="0,0,10,0"/>
+                <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,4,0" FontWeight="SemiBold"/>
+                <TextBox Text="{Binding ScheduleSearchText, UpdateSourceTrigger=PropertyChanged}"
+                         Width="180" Padding="4,3" Margin="0,0,8,0"
+                         ToolTip="Search team, ground, division or date — results update instantly"/>
+                <Button Content="✕ Clear" Command="{Binding ClearFiltersCommand}" Padding="8,4"/>
+                <TextBlock Text="  ℹ Click any column header to sort. Shift+click for multi-column sort."
+                           FontSize="11" Foreground="#888" VerticalAlignment="Center"/>
+            </WrapPanel>
+        </Border>
+
+        <!-- ══ FORBIDDEN SLOTS EXPANDER ═════════════════════════════════════ -->
+        <Border Grid.Row="2" Style="{StaticResource Pill}">
+            <Expander Header="🚫  Forbidden Slots — ground/time combinations excluded from all scheduling"
+                      IsExpanded="False">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,6">
+                        <StackPanel Margin="0,0,10,0">
+                            <TextBlock Text="Date (optional)" FontSize="11" Foreground="#555"/>
+                            <DatePicker SelectedDate="{Binding NewForbiddenDate}" Width="130"/>
+                        </StackPanel>
+                        <StackPanel Margin="0,0,10,0">
+                            <TextBlock Text="Ground (optional)" FontSize="11" Foreground="#555"/>
+                            <ComboBox Width="140" ItemsSource="{Binding GroundNames}"
+                                      Text="{Binding NewForbiddenGround, UpdateSourceTrigger=PropertyChanged}"
+                                      IsEditable="True"/>
+                        </StackPanel>
+                        <StackPanel Margin="0,0,10,0">
+                            <TextBlock Text="Time Slot (optional)" FontSize="11" Foreground="#555"/>
+                            <ComboBox Width="150" ItemsSource="{Binding TimeSlotDisplays}"
+                                      SelectedItem="{Binding NewForbiddenTimeSlot}"/>
+                        </StackPanel>
+                        <StackPanel Margin="0,0,10,0">
+                            <TextBlock Text="Division (optional)" FontSize="11" Foreground="#555"/>
+                            <ComboBox Width="130" ItemsSource="{Binding FilterDivisions}"
+                                      Text="{Binding NewForbiddenDivision, UpdateSourceTrigger=PropertyChanged}"
+                                      IsEditable="True"/>
+                        </StackPanel>
+                        <StackPanel VerticalAlignment="Bottom">
+                            <Button Content="➕ Add" Command="{Binding AddForbiddenSlotCommand}"
+                                    Padding="10,5" Margin="0,0,6,0"/>
+                            <Button Content="🗑 Remove" Command="{Binding RemoveForbiddenSlotCommand}"
+                                    Padding="10,5" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </WrapPanel>
+                    <ListBox Grid.Row="1" ItemsSource="{Binding ForbiddenSlots}"
+                             SelectedItem="{Binding SelectedForbiddenSlot}"
+                             DisplayMemberPath="Display" Height="70"/>
+                </Grid>
+            </Expander>
+        </Border>
+
+        <!-- ══ SCHEDULED MATCHES GRID ════════════════════════════════════════ -->
+        <DataGrid Grid.Row="3" x:Name="MatchGrid"
                   ItemsSource="{Binding FilteredScheduledMatches}"
                   SelectedItem="{Binding SelectedMatch}"
-                  AutoGenerateColumns="False"
-                  IsReadOnly="True"
-                  GridLinesVisibility="Horizontal"
-                  HeadersVisibility="Column"
-                  CanUserResizeColumns="True"
-                  EnableRowVirtualization="True">
+                  Style="{StaticResource SortableGrid}">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="#"        Binding="{Binding Sequence}"    Width="45"/>
-                <DataGridTextColumn Header="Division" Binding="{Binding DivisionName}" Width="120"/>
-                <DataGridTextColumn Header="Date"     Binding="{Binding DateDisplay}"  Width="110"/>
-                <DataGridTextColumn Header="Time"     Binding="{Binding TimeRange}"    Width="145"/>
-                <DataGridTextColumn Header="Team One" Binding="{Binding TeamOne}"      Width="*"/>
-                <DataGridTextColumn Header="Team Two" Binding="{Binding TeamTwo}"      Width="*"/>
-                <DataGridTextColumn Header="Ground"   Binding="{Binding GroundName}"   Width="130"/>
-                <DataGridTextColumn Header="Umpire 1" Binding="{Binding UmpireOne}"    Width="130"/>
-                <DataGridTextColumn Header="Umpire 2" Binding="{Binding UmpireTwo}"    Width="130"/>
-                <DataGridCheckBoxColumn Header="Fixed" Binding="{Binding IsFixed}"     Width="55"/>
+                <DataGridTextColumn Header="#"        Binding="{Binding Sequence}"    Width="45"  SortMemberPath="Sequence"/>
+                <DataGridTextColumn Header="Division" Binding="{Binding DivisionName}" Width="110" SortMemberPath="DivisionName"/>
+                <DataGridTextColumn Header="Date"     Binding="{Binding DateDisplay}"  Width="100" SortMemberPath="DateDisplay"/>
+                <DataGridTextColumn Header="Time"     Binding="{Binding TimeRange}"    Width="140" SortMemberPath="TimeRange"/>
+                <DataGridTextColumn Header="Team One" Binding="{Binding TeamOne}"      Width="*"   SortMemberPath="TeamOne"/>
+                <DataGridTextColumn Header="Team Two" Binding="{Binding TeamTwo}"      Width="*"   SortMemberPath="TeamTwo"/>
+                <DataGridTextColumn Header="Ground"   Binding="{Binding GroundName}"   Width="120" SortMemberPath="GroundName"/>
+                <DataGridTextColumn Header="Umpiring Team" Binding="{Binding UmpireOne}" Width="130" SortMemberPath="UmpireOne"/>
+                <DataGridCheckBoxColumn Header="Fixed" Binding="{Binding IsFixed, Mode=OneWay}" Width="55"/>
             </DataGrid.Columns>
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
                     <Style.Triggers>
                         <DataTrigger Binding="{Binding HasConflict}" Value="True">
                             <Setter Property="Background" Value="#FFEEEE"/>
+                            <Setter Property="ToolTip" Value="⚠ This match has a scheduling conflict"/>
                         </DataTrigger>
                         <DataTrigger Binding="{Binding IsFixed}" Value="True">
                             <Setter Property="Background" Value="#E8F5E9"/>
+                            <Setter Property="ToolTip" Value="🔒 Fixed — will not be moved by Reschedule"/>
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
             </DataGrid.RowStyle>
         </DataGrid>
+
+        <!-- ══ UNSCHEDULED SECTION HEADER ═══════════════════════════════════ -->
+        <Border Grid.Row="4" Background="#FFF3E0" Padding="10,6" Margin="0,6,0,0"
+                BorderBrush="#FFCC80" BorderThickness="1" CornerRadius="4">
+            <DockPanel LastChildFill="False">
+                <!-- Title + count -->
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                    <TextBlock FontWeight="Bold" Foreground="#E65100" FontSize="13" VerticalAlignment="Center">
+                        <Run Text="⚠  Unscheduled Matches: "/>
+                        <Run Text="{Binding UnscheduledMatches.Count, Mode=OneWay}"/>
+                    </TextBlock>
+                    <TextBlock Margin="14,0,0,0" VerticalAlignment="Center" Foreground="#666" FontSize="11"
+                               Text="Tick constraint columns per row, then Backtrack. Or set Date/Slot/Ground and click 📅 Schedule."/>
+                </StackPanel>
+
+                <!-- Right-side action buttons -->
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button Content="✅ Relax All Selected"
+                            Command="{Binding RelaxAllConstraintsCommand}"
+                            CommandParameter="{Binding ElementName=UnscheduledGrid}"
+                            Padding="10,5" Margin="0,0,6,0"
+                            ToolTip="Tick all constraint checkboxes for selected rows"/>
+                    <Button Content="🚫 Clear Relaxations"
+                            Command="{Binding RelaxNoConstraintsCommand}"
+                            CommandParameter="{Binding ElementName=UnscheduledGrid}"
+                            Padding="10,5" Margin="0,0,6,0"
+                            ToolTip="Untick all constraint checkboxes for selected rows"/>
+                    <Button Content="🔁 Backtrack Reschedule"
+                            Command="{Binding BacktrackRescheduleCommand}"
+                            Padding="12,5" Margin="0,0,6,0"
+                            Background="#E65100" Foreground="White" FontWeight="SemiBold"
+                            ToolTip="Retry scheduling all unscheduled matches using their relaxed constraints"/>
+                    <Button Content="📤 Export"
+                            Command="{Binding ExportUnscheduledCommand}"
+                            Padding="10,5" Margin="0,0,6,0"/>
+                    <Button Content="🗑 Remove"
+                            Command="{Binding RemoveUnscheduledMatchCommand}"
+                            Padding="10,5"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- ══ UNSCHEDULED MATCHES GRID ══════════════════════════════════════
+             Column groups:
+               [1-4]  Match info (read-only)
+               [5-12] Constraint relaxation checkboxes (one per constraint)
+               [13-15] Manual slot override
+               [16]   Schedule action
+        ═══════════════════════════════════════════════════════════════════════ -->
+        <DataGrid Grid.Row="5" x:Name="UnscheduledGrid"
+                  ItemsSource="{Binding UnscheduledMatches}"
+                  SelectedItem="{Binding SelectedUnscheduledMatch}"
+                  AutoGenerateColumns="False" IsReadOnly="False"
+                  GridLinesVisibility="All" HeadersVisibility="Column"
+                  CanUserResizeColumns="True" CanUserSortColumns="True"
+                  SelectionMode="Extended" Background="#FFFDE7">
+            <DataGrid.ColumnHeaderStyle>
+                <Style TargetType="DataGridColumnHeader">
+                    <Setter Property="FontWeight" Value="SemiBold"/>
+                    <Setter Property="FontSize" Value="11"/>
+                    <Setter Property="Padding" Value="4,4"/>
+                    <Setter Property="Background" Value="#FFE0B2"/>
+                    <Setter Property="BorderBrush" Value="#FFCC80"/>
+                    <Setter Property="BorderThickness" Value="0,0,1,1"/>
+                    <Setter Property="Cursor" Value="Hand"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                    <Setter Property="TextBlock.TextAlignment" Value="Center"/>
+                </Style>
+            </DataGrid.ColumnHeaderStyle>
+
+            <DataGrid.Columns>
+                <!-- ── Match info ────────────────────────────────────────── -->
+                <DataGridTextColumn Header="Division"  Binding="{Binding Division}"  Width="100" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Team One"  Binding="{Binding TeamOne}"   Width="*"   IsReadOnly="True"/>
+                <DataGridTextColumn Header="Team Two"  Binding="{Binding TeamTwo}"   Width="*"   IsReadOnly="True"/>
+                <DataGridTextColumn Header="Reason for&#10;Failure" Binding="{Binding Reason}" Width="170" IsReadOnly="True"/>
+
+                <!-- ── FAIRNESS constraints ──────────────────────────────── -->
+                <DataGridCheckBoxColumn Width="72" Binding="{Binding RelaxGroundFairness, UpdateSourceTrigger=PropertyChanged}">
+                    <DataGridCheckBoxColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                            <Setter Property="ToolTip" Value="Allow assigning to an already over-used ground (ignores ground rotation fairness)"/>
+                        </Style>
+                    </DataGridCheckBoxColumn.HeaderStyle>
+                    <DataGridCheckBoxColumn.Header>
+                        <TextBlock TextAlignment="Center" FontSize="11">Ground&#10;Fairness</TextBlock>
+                    </DataGridCheckBoxColumn.Header>
+                </DataGridCheckBoxColumn>
+
+                <DataGridCheckBoxColumn Width="72" Binding="{Binding RelaxUmpireFairness, UpdateSourceTrigger=PropertyChanged}">
+                    <DataGridCheckBoxColumn.Header>
+                        <TextBlock TextAlignment="Center" FontSize="11">Umpire&#10;Fairness</TextBlock>
+                    </DataGridCheckBoxColumn.Header>
+                    <DataGridCheckBoxColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                            <Setter Property="ToolTip" Value="Assign umpires regardless of current umpiring-duty load"/>
+                        </Style>
+                    </DataGridCheckBoxColumn.HeaderStyle>
+                </DataGridCheckBoxColumn>
+
+                <DataGridCheckBoxColumn Width="72" Binding="{Binding RelaxTimeSlotFairness, UpdateSourceTrigger=PropertyChanged}">
+                    <DataGridCheckBoxColumn.Header>
+                        <TextBlock TextAlignment="Center" FontSize="11">Time Slot&#10;Fairness</TextBlock>
+                    </DataGridCheckBoxColumn.Header>
+                    <DataGridCheckBoxColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                            <Setter Property="ToolTip" Value="Allow using a time slot that is already over-represented in the schedule"/>
+                        </Style>
+                    </DataGridCheckBoxColumn.HeaderStyle>
+                </DataGridCheckBoxColumn>
+
+                <!-- ── RHYTHM constraints ────────────────────────────────── -->
+                <DataGridCheckBoxColumn Width="72" Binding="{Binding RelaxMaxGapRule, UpdateSourceTrigger=PropertyChanged}">
+                    <DataGridCheckBoxColumn.Header>
+                        <TextBlock TextAlignment="Center" FontSize="11">≤2 Week&#10;Break</TextBlock>
+                    </DataGridCheckBoxColumn.Header>
+                    <DataGridCheckBoxColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                            <Setter Property="ToolTip" Value="Allow a team to sit out more than 2 consecutive weekends without a match"/>
+                        </Style>
+                    </DataGridCheckBoxColumn.HeaderStyle>
+                </DataGridCheckBoxColumn>
+
+                <DataGridCheckBoxColumn Width="72" Binding="{Binding RelaxOneMatchPerWeekend, UpdateSourceTrigger=PropertyChanged}">
+                    <DataGridCheckBoxColumn.Header>
+                        <TextBlock TextAlignment="Center" FontSize="11">1 Match&#10;/Weekend</TextBlock>
+                    </DataGridCheckBoxColumn.Header>
+                    <DataGridCheckBoxColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                            <Setter Property="ToolTip" Value="Allow a team to play more than one match in the same weekend"/>
+                        </Style>
+                    </DataGridCheckBoxColumn.HeaderStyle>
+                </DataGridCheckBoxColumn>
+
+                <!-- ── DATE / TIME RESTRICTION constraints ───────────────── -->
+                <DataGridCheckBoxColumn Width="72" Binding="{Binding RelaxTimeSlotRestriction, UpdateSourceTrigger=PropertyChanged}">
+                    <DataGridCheckBoxColumn.Header>
+                        <TextBlock TextAlignment="Center" FontSize="11">Time Slot&#10;Restriction</TextBlock>
+                    </DataGridCheckBoxColumn.Header>
+                    <DataGridCheckBoxColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                            <Setter Property="ToolTip" Value="Ignore team partial-time unavailability blocks (e.g. 09:30–11:30 not available)"/>
+                        </Style>
+                    </DataGridCheckBoxColumn.HeaderStyle>
+                </DataGridCheckBoxColumn>
+
+                <DataGridCheckBoxColumn Width="72" Binding="{Binding RelaxDateRestriction, UpdateSourceTrigger=PropertyChanged}">
+                    <DataGridCheckBoxColumn.Header>
+                        <TextBlock TextAlignment="Center" FontSize="11">Date&#10;Restriction</TextBlock>
+                    </DataGridCheckBoxColumn.Header>
+                    <DataGridCheckBoxColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                            <Setter Property="ToolTip" Value="Ignore team full-day unavailability blocks (e.g. team unavailable on 2026-05-10)"/>
+                        </Style>
+                    </DataGridCheckBoxColumn.HeaderStyle>
+                </DataGridCheckBoxColumn>
+
+                <!-- ── TOURNAMENT STRUCTURE constraint ───────────────────── -->
+                <DataGridCheckBoxColumn Width="72" Binding="{Binding RelaxDiscardedDates, UpdateSourceTrigger=PropertyChanged}">
+                    <DataGridCheckBoxColumn.Header>
+                        <TextBlock TextAlignment="Center" FontSize="11">Blackout&#10;Dates</TextBlock>
+                    </DataGridCheckBoxColumn.Header>
+                    <DataGridCheckBoxColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                            <Setter Property="ToolTip" Value="Allow scheduling on tournament blackout / discarded dates"/>
+                        </Style>
+                    </DataGridCheckBoxColumn.HeaderStyle>
+                </DataGridCheckBoxColumn>
+
+                <!-- ── Manual slot override ──────────────────────────────── -->
+                <DataGridTextColumn Header="Manual Date&#10;(yyyy-MM-dd)" Binding="{Binding ManualDate}" Width="115"/>
+                <DataGridComboBoxColumn Header="Time Slot" Width="145"
+                                        SelectedItemBinding="{Binding ManualTimeSlot, UpdateSourceTrigger=PropertyChanged}"
+                                        ItemsSource="{Binding DataContext.TimeSlotDisplays, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+                <DataGridComboBoxColumn Header="Ground" Width="120"
+                                        SelectedItemBinding="{Binding ManualGround, UpdateSourceTrigger=PropertyChanged}"
+                                        ItemsSource="{Binding DataContext.GroundNames, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+
+                <!-- ── Manual schedule button ─────────────────────────────── -->
+                <DataGridTemplateColumn Header="Action" Width="110" IsReadOnly="True">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="📅 Schedule Now"
+                                    Command="{Binding DataContext.ManuallyScheduleMatchCommand,
+                                              RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                    CommandParameter="{Binding}"
+                                    Padding="5,4" Margin="2"
+                                    Background="#1565C0" Foreground="White" FontSize="11"
+                                    ToolTip="Push this match to the schedule using the Manual Date / Slot / Ground above"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+
+            <!-- Colour: rows where any constraint is relaxed turn light-yellow -->
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding RelaxGroundFairness}"      Value="True">
+                            <Setter Property="Background" Value="#FFF9C4"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding RelaxDiscardedDates}"      Value="True">
+                            <Setter Property="Background" Value="#FFF9C4"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
+        </DataGrid>
+
+        <!-- ══ MOVE PANEL ════════════════════════════════════════════════════ -->
+        <Border Grid.Row="6" Margin="0,8,0,0">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Setter Property="BorderBrush" Value="#1976D2"/>
+                    <Setter Property="BorderThickness" Value="1"/>
+                    <Setter Property="CornerRadius" Value="5"/>
+                    <Setter Property="Padding" Value="12"/>
+                    <Setter Property="Background" Value="#E3F2FD"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding ShowMovePanel}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="160"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+                    <TextBlock DockPanel.Dock="Left" Text="↔  Move Match — Choose an Alternative Slot"
+                               FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="#1565C0"/>
+                    <Button DockPanel.Dock="Right" Content="✕ Cancel"
+                            Command="{Binding CancelMoveCommand}" Padding="10,5"/>
+                </DockPanel>
+
+                <Border Grid.Row="1" Background="#BBDEFB" CornerRadius="4" Padding="8,6" Margin="0,0,0,8">
+                    <TextBlock Text="{Binding MoveAnalysis}" Foreground="#0D47A1"
+                               FontSize="12" TextWrapping="Wrap"/>
+                </Border>
+
+                <!-- Alternative slots — click a row then Apply -->
+                <DataGrid Grid.Row="2" x:Name="MoveGrid"
+                          ItemsSource="{Binding MoveOptions}"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                          CanUserResizeColumns="True" CanUserSortColumns="True"
+                          SelectionMode="Single">
+                    <DataGrid.ColumnHeaderStyle>
+                        <Style TargetType="DataGridColumnHeader">
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Setter Property="Padding" Value="6,4"/>
+                            <Setter Property="Background" Value="#BBDEFB"/>
+                            <Setter Property="Cursor" Value="Hand"/>
+                        </Style>
+                    </DataGrid.ColumnHeaderStyle>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Date"              Binding="{Binding DateDisplay}"                    Width="140" SortMemberPath="DateDisplay"/>
+                        <DataGridTextColumn Header="Time"              Binding="{Binding TimeRange}"                      Width="145" SortMemberPath="TimeRange"/>
+                        <DataGridTextColumn Header="Ground"            Binding="{Binding GroundName}"                     Width="120" SortMemberPath="GroundName"/>
+                        <DataGridTextColumn Header="Affected Matches"  Binding="{Binding AffectedMatches}"               Width="120" SortMemberPath="AffectedMatches"/>
+                        <DataGridTextColumn Header="Fairness Score"    Binding="{Binding FairnessScore, StringFormat=F1}" Width="110" SortMemberPath="FairnessScore"/>
+                        <DataGridTextColumn Header="Recommendation"    Binding="{Binding Summary}"                        Width="*"/>
+                    </DataGrid.Columns>
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsRecommended}" Value="True">
+                                    <Setter Property="Background" Value="#C8E6C9"/>
+                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                    <Setter Property="ToolTip" Value="★ Best option — zero conflicts, high fairness"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGrid.RowStyle>
+                </DataGrid>
+
+                <DockPanel Grid.Row="3" Margin="0,8,0,0" LastChildFill="False">
+                    <Button DockPanel.Dock="Left" Content="✔ Apply Selected Move"
+                            Command="{Binding ApplyMoveCommand}"
+                            CommandParameter="{Binding SelectedItem, ElementName=MoveGrid}"
+                            Padding="14,7" Background="#1565C0" Foreground="White" FontWeight="SemiBold"/>
+                    <TextBlock DockPanel.Dock="Left" Margin="12,0,0,0" VerticalAlignment="Center"
+                               FontSize="11" Foreground="#555">
+                        Green rows = recommended (0 affected, high fairness). Click a row then Apply.
+                    </TextBlock>
+                </DockPanel>
+            </Grid>
+        </Border>
     </Grid>
 </UserControl>
