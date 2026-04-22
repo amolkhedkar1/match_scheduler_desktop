@@ -97,7 +97,8 @@ DivisionB,Team3,False,4
 DivisionB,Team4,False,4
 ```
 - `IsRoundRobin=True` → all unique pairs scheduled
-- `IsRoundRobin=False` → `MatchesPerTeam` opponents per team using balanced pairing
+- `IsRoundRobin=False` → `MatchesPerTeam`  match pairings are generated using a **balanced skip-based fixed pairing algorithm**.
+
 
 ### constraints.csv
 ```csv
@@ -236,14 +237,96 @@ The main window hosts five tabs via a `TabControl`: **Tournament**, **Divisions*
 
 **Match generation rules per division:**
 - `IsRoundRobin=true` → all N×(N-1)/2 unique pairs
-- `IsRoundRobin=false` → balanced pairing algorithm:
-  - Teams sorted alphabetically; round-robin rotation wheel (round 0: Team[0]↔Team[N-1], Team[1]↔Team[N-2], …; subsequent rounds rotate wheel)
-  - Each team gets exactly `MatchesPerTeam` opponents
-  - No team plays any opponent more than once
-  - Teams at quota are skipped in subsequent iterations
-  - Result stored in `Division.FixedPairings`
+- `IsRoundRobin=false` → 
+**Fixed matches per team (`IsRoundRobin=false`):**
+
+- `GenerateSchedule` calls `GeneratePairingsForDivision(div)` for any fixed-mode division with empty `FixedPairings`
+
+#### Algorithm Overview
+
+  - Teams are **sorted alphabetically (case-insensitive)**.
+  - Each team plays exactly `MatchesPerTeam` opponents.
+  - A **skip value** determines which opponents a team will NOT play.
+
+  **Skip formula:**
+  ```
+  skip = n - MatchesPerTeam - 1
+  ```
 
 ---
+
+#### Pairing Logic
+
+  - For each team index `i`, opponents are chosen excluding:
+    - Itself
+    - `skip` teams starting from mirror position `(n - 1 - i)` moving inward
+
+  - Only valid pairs `(i < j)` are selected where:
+    - Not forbidden
+    - Both teams under match quota
+    - Pair not already used
+
+---
+
+#### Guarantees
+
+  - Exact `MatchesPerTeam` matches per team
+  - No duplicate matches (in base case)
+  - Balanced distribution
+  - Deterministic output
+
+---
+
+#### 🔁 Handling MatchesPerTeam > (n - 1)
+
+When matches requested exceed unique opponents:
+
+```
+MatchesPerTeam > (n - 1)
+```
+
+##### Behavior
+
+1. Generate all **unique pairings first**
+2. Then **repeat matches** using same balanced pairing logic
+3. Previously used pairs are allowed in second pass
+
+---
+
+##### Example: 8 Teams, 8 Matches Per Team
+
+- Each team has 7 unique opponents
+- Needs 1 extra match
+
+**Repeat pairing (mirror-based):**
+
+| Team | Repeat Opponent |
+|------|---------------|
+| T1   | T8            |
+| T2   | T7            |
+| T3   | T6            |
+| T4   | T5            |
+
+---
+
+##### Result
+
+- Each team plays:
+  - 7 unique matches
+  - 1 repeated match
+- Repeats are:
+  - Symmetric
+  - Evenly distributed
+
+---
+
+##### Implementation Note
+
+- Requires relaxing `usedPairs` constraint after first pass
+- Same `GeneratePairingsForDivision` function can support multi-pass logic
+
+---
+
 
 ### 6.3 Requests Tab (`SchedulingRequestView`)
 
@@ -504,11 +587,92 @@ string? ManualScheduleTimeSlot, ManualScheduleGround, ManualScheduleUmpire
 - Generates all N×(N-1)/2 unique pairs
 
 **Fixed matches per team (`IsRoundRobin=false`):**
-- Teams sorted alphabetically; results stored in `Division.FixedPairings`
-- Round 0: Team[0]↔Team[N-1], Team[1]↔Team[N-2], …, Team[N/2-1]↔Team[N/2]
-- Subsequent rounds rotate the wheel (last → position 1)
-- Stops when every team reaches `MatchesPerTeam`; no duplicate pairs
+
+#### Algorithm Overview
+
+  - Teams are **sorted alphabetically (case-insensitive)**.
+  - Each team plays exactly `MatchesPerTeam` opponents.
+  - A **skip value** determines which opponents a team will NOT play.
+
+  **Skip formula:**
+  ```
+  skip = n - MatchesPerTeam - 1
+  ```
+
+---
+
+#### Pairing Logic
+
+  - For each team index `i`, opponents are chosen excluding:
+    - Itself
+    - `skip` teams starting from mirror position `(n - 1 - i)` moving inward
+
+  - Only valid pairs `(i < j)` are selected where:
+    - Not forbidden
+    - Both teams under match quota
+    - Pair not already used
+
+---
+
+#### Guarantees
+
+  - Exact `MatchesPerTeam` matches per team
+  - No duplicate matches (in base case)
+  - Balanced distribution
+  - Deterministic output
+
+---
+
+#### 🔁 Handling MatchesPerTeam > (n - 1)
+
+When matches requested exceed unique opponents:
+
+```
+MatchesPerTeam > (n - 1)
+```
+
+##### Behavior
+
+1. Generate all **unique pairings first**
+2. Then **repeat matches** using same balanced pairing logic
+3. Previously used pairs are allowed in second pass
+
+---
+
+##### Example: 8 Teams, 8 Matches Per Team
+
+- Each team has 7 unique opponents
+- Needs 1 extra match
+
+**Repeat pairing (mirror-based):**
+
+| Team | Repeat Opponent |
+|------|---------------|
+| T1   | T8            |
+| T2   | T7            |
+| T3   | T6            |
+| T4   | T5            |
+
+---
+
+##### Result
+
+- Each team plays:
+  - 7 unique matches
+  - 1 repeated match
+- Repeats are:
+  - Symmetric
+  - Evenly distributed
+
+---
+
+##### Implementation Note
 - `GenerateSchedule` calls `GeneratePairingsForDivision(div)` for any fixed-mode division with empty `FixedPairings`
+- Requires relaxing `usedPairs` constraint after first pass
+- Same `GeneratePairingsForDivision` function can support multi-pass logic
+
+---
+
 
 ### 8.2 Optimised Scheduling Algorithm
 
@@ -522,6 +686,7 @@ string? ManualScheduleTimeSlot, ManualScheduleGround, ManualScheduleUmpire
 4. **Backtrack pass** (`BacktrackImprove`) — for each remaining unscheduled match:
    - Tries a direct slot first
    - If no direct slot: finds a non-fixed already-scheduled match whose removal frees a valid slot; displaces it, places the current match, then re-places the displaced match
+   -create it as a tree backtracking, create differnt branches of solution and selct best branch, go for upto three branches of solution at each level of tree.
 5. Both `TryScheduleOrdering` and `BacktrackImprove` call `IsForbiddenForMatch` per match for division-aware enforcement
 6. Fixed matches passed in to `Generate` are kept unchanged (slots, umpires, grounds all preserved); only non-fixed matches are regenerated
 
@@ -575,10 +740,11 @@ Unscheduled matches appear in the **Unscheduled Matches** grid. Each row has 8 i
 - **`IsForbidden`** (global pre-filter, slot matrix build): **skips** entries that have a non-null `Division` field
 - **`IsForbiddenForMatch(slot, divisionName, forbidden)`** (per-match check): checks all four fields including `Division` (null = all divisions wildcard)
 - `IsForbiddenForMatch` is called in `TryScheduleOrdering`, `BacktrackImprove`, `BacktrackReschedule`, and `SuggestMoves`
-- Stored in-memory in `ForbiddenSlots` collection (not persisted to CSV)
+- Stored in persistant CSV  `ForbiddenSlots` collection (save with torunament.csv ) loat with tournament open
 - Each slot shows a `Display` string: `Date | Ground | TimeSlot | Division`
 
 ---
+
 
 ## 10. Move Analysis (`SuggestMoves`)
 
@@ -590,6 +756,7 @@ When user clicks **Analyze Move** on a selected match:
    - Slots occupied by **fixed matches** are excluded entirely (can never be overwritten)
    - Fixed matches are included in the constraint context so team-busy checks see all commitments
    - Slot must differ from current assignment
+   - before suggesting a slot virtually place the match there and check if it breaks any hard scheduling rule.
 3. For occupied slots: identifies non-fixed displaced match(es), temporarily removes them from constraint context, evaluates team availability as if vacated; `AffectedMatchList` populated for UI display
 4. Results sorted: fewest affected matches first, then highest fairness score
 5. Slots with 0 affected and fairness > 80 marked `IsRecommended=true` (shown in green)
@@ -623,13 +790,15 @@ Priority order for `AssignUmpires` (all subject to hard rules):
 | 1 | Team with a match in **adjacent slot on same date + ground** (physically at the ground) |
 | 2 | Team with **no match in the same calendar week** (ISO week) — least travel burden |
 | 3 | Any eligible team with the **lowest umpire load** (fairness fallback) |
+| 4 | 
 
 
 Hard rules (always enforced):
 - A team **never** umpires its **own division**
 - A team **never** umpires a match it is **playing** (same date + slot, any ground)
 - A team **never** umpires at a ground where it is **not playing that day**
-
+- A team **never** umpire twice on **same weekend**
+- Max Umpiring Assignments per Team = ceil(Total Matches Played by Team / 2)
 Ties within each priority tier broken by lowest cumulative umpire load.
 
 **`RescheduleUmpiring(League league)`** — public method: clears umpire assignments on non-fixed matches, then calls `AssignUmpires`.
