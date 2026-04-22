@@ -9,24 +9,6 @@
         <Style x:Key="TeamHeaderStyle" TargetType="DataGridColumnHeader">
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
-        <Style x:Key="StatGridStyle" TargetType="DataGrid">
-            <Setter Property="IsReadOnly" Value="True"/>
-            <Setter Property="AutoGenerateColumns" Value="True"/>
-            <Setter Property="CanUserAddRows" Value="False"/>
-            <Setter Property="CanUserDeleteRows" Value="False"/>
-            <Setter Property="CanUserReorderColumns" Value="False"/>
-            <Setter Property="GridLinesVisibility" Value="All"/>
-            <Setter Property="HorizontalGridLinesBrush" Value="#DDD"/>
-            <Setter Property="VerticalGridLinesBrush" Value="#DDD"/>
-            <Setter Property="AlternatingRowBackground" Value="#FAFAFA"/>
-            <Setter Property="RowBackground" Value="White"/>
-            <Setter Property="SelectionMode" Value="Single"/>
-            <Setter Property="ColumnHeaderHeight" Value="32"/>
-            <Setter Property="RowHeight" Value="26"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="HorizontalScrollBarVisibility" Value="Auto"/>
-            <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
-        </Style>
     </UserControl.Resources>
 
     <DockPanel Margin="10">
@@ -42,36 +24,45 @@
             <!-- Tab 1: Matches Scheduled -->
             <TabItem Header="Matches Scheduled">
                 <DockPanel Margin="4">
-                    <TextBlock DockPanel.Dock="Top" Margin="0,6,0,6" Foreground="#555" FontSize="11"
-                               Text="1 = match scheduled on that date for the team | Last row = matches per date | Last column = matches per team"/>
-                    <DataGrid x:Name="MatchesGrid"
-                              Style="{StaticResource StatGridStyle}"
-                              AutoGeneratingColumn="Grid_AutoGeneratingColumn"
-                              LoadingRow="Grid_LoadingRow"/>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,6,0,6">
+                        <Button x:Name="ExportAllMatchesBtn" DockPanel.Dock="Right"
+                                Content="📤 Export All" Padding="10,4" Margin="6,0,0,0"/>
+                        <TextBlock Foreground="#555" FontSize="11" VerticalAlignment="Center"
+                                   Text="1 = match scheduled · = none | Last row = matches per date | Last column = per team"/>
+                    </DockPanel>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="MatchesPanel"/>
+                    </ScrollViewer>
                 </DockPanel>
             </TabItem>
 
             <!-- Tab 2: Umpiring Schedule -->
             <TabItem Header="Umpiring Schedule">
                 <DockPanel Margin="4">
-                    <TextBlock DockPanel.Dock="Top" Margin="0,6,0,6" Foreground="#555" FontSize="11"
-                               Text="1 = team has umpiring duty on that date | Last row = teams umpiring per date | Last column = dates with umpiring per team"/>
-                    <DataGrid x:Name="UmpiringGrid"
-                              Style="{StaticResource StatGridStyle}"
-                              AutoGeneratingColumn="Grid_AutoGeneratingColumn"
-                              LoadingRow="Grid_LoadingRow"/>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,6,0,6">
+                        <Button x:Name="ExportAllUmpiringBtn" DockPanel.Dock="Right"
+                                Content="📤 Export All" Padding="10,4" Margin="6,0,0,0"/>
+                        <TextBlock Foreground="#555" FontSize="11" VerticalAlignment="Center"
+                                   Text="1 = umpiring duty that date · = none | Last row = teams umpiring per date | Last column = dates per team"/>
+                    </DockPanel>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="UmpiringPanel"/>
+                    </ScrollViewer>
                 </DockPanel>
             </TabItem>
 
             <!-- Tab 3: Ground Assignment -->
             <TabItem Header="Ground Assignment">
                 <DockPanel Margin="4">
-                    <TextBlock DockPanel.Dock="Top" Margin="0,6,0,6" Foreground="#555" FontSize="11"
-                               Text="Number of matches each team plays at each ground | Last row = total matches per ground | Last column = total matches per team"/>
-                    <DataGrid x:Name="GroundGrid"
-                              Style="{StaticResource StatGridStyle}"
-                              AutoGeneratingColumn="Grid_AutoGeneratingColumn"
-                              LoadingRow="Grid_LoadingRow"/>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,6,0,6">
+                        <Button x:Name="ExportAllGroundBtn" DockPanel.Dock="Right"
+                                Content="📤 Export All" Padding="10,4" Margin="6,0,0,0"/>
+                        <TextBlock Foreground="#555" FontSize="11" VerticalAlignment="Center"
+                                   Text="Matches played at each ground | Last row = total per ground | Last column = total per team"/>
+                    </DockPanel>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="GroundPanel"/>
+                    </ScrollViewer>
                 </DockPanel>
             </TabItem>
 

@@ -84,6 +84,9 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string moveAnalysis = string.Empty;
     [ObservableProperty] private bool showMovePanel;
 
+    // ── Unscheduled slot selection + affected-match resolution ───────────────
+    [ObservableProperty] private MoveOptionViewModel? selectedUnscheduledMoveOption;
+
     // ── Scheduler text search filter ─────────────────────────────────────────
     [ObservableProperty] private string scheduleSearchText = string.Empty;
 
@@ -110,6 +113,8 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<ForbiddenSlot> ForbiddenSlots { get; } = [];
     public ObservableCollection<MoveOptionViewModel> MoveOptions { get; } = [];
     public ObservableCollection<MoveOptionViewModel> UnscheduledMoveOptions { get; } = [];
+    public ObservableCollection<AffectedSlotMatchRow> AffectedMatchesForSelectedSlot { get; } = [];
+    public bool HasAffectedMatches => AffectedMatchesForSelectedSlot.Count > 0;
     public ObservableCollection<UnscheduledMatchRow> UnscheduledMatches { get; } = [];
     public ObservableCollection<SchedulingRequestRow> FilteredRequests { get; } = [];
     public ObservableCollection<Division> FilteredDivisions { get; } = [];
@@ -621,27 +626,88 @@ public partial class MainViewModel : ObservableObject
     {
         if (CurrentLeague is null) { MessageBox.Show("Open a league first.", "Scheduler"); return; }
 
-        // Sync in-memory edits back to league before scheduling
         CurrentLeague.Divisions = Divisions.ToList();
         CurrentLeague.Constraints = SchedulingRequests.Select(r => r.Request).ToList();
 
-        // Ensure pairings are generated for all fixed-mode divisions before scheduling
         foreach (var div in CurrentLeague.Divisions.Where(d => !d.IsRoundRobin && d.Teams.Count >= 2))
         {
             if (div.FixedPairings.Count == 0)
                 GeneratePairingsForDivision(div);
         }
 
-        // Preserve any matches the user has marked Fixed — they survive a fresh generate.
+        // Save relaxation state from the previous run so they survive the fresh generate.
+        var savedRelaxations = UnscheduledMatches.ToDictionary(
+            r => (r.TeamOne, r.TeamTwo, r.Division),
+            r => CaptureRelaxations(r));
+
         var fixedMatches = CurrentLeague.Matches.Where(m => m.IsFixed).ToList();
         var result = _schedulingService.Generate(CurrentLeague, fixedMatches, ForbiddenSlots.ToList());
         CurrentLeague.Matches = result.ScheduledMatches.ToList();
+
+        // If any previously-unscheduled matches had relaxations set, automatically run the
+        // backtrack pass with those relaxations before reporting results.
+        if (savedRelaxations.Values.Any(HasAnyRelaxation) && result.UnscheduledMatches.Count > 0)
+        {
+            var relaxedList = result.UnscheduledMatches
+                .Select(x =>
+                {
+                    var key = (x.Match.TeamOne, x.Match.TeamTwo, x.Match.DivisionName);
+                    var relax = savedRelaxations.TryGetValue(key, out var saved) ? saved : new RelaxedConstraints();
+                    return (x.Match, relax);
+                })
+                .ToList();
+
+            var btResult = _schedulingService.BacktrackReschedule(
+                CurrentLeague, relaxedList, fixedMatches, ForbiddenSlots.ToList());
+
+            CurrentLeague.Matches = btResult.ScheduledMatches.ToList();
+            result = btResult;
+        }
+
         await _leagueService.SaveLeagueAsync(CurrentLeague);
         await _exportService.ExportScheduleAsync(CurrentLeague.Matches, GetScheduleOutputPath(CurrentLeague.Name));
         RenderSchedule();
         RefreshFilterOptions();
         PopulateUnscheduled(result.UnscheduledMatches);
+
+        // Restore relaxation flags on any matches still unscheduled so the user's choices persist.
+        foreach (var row in UnscheduledMatches)
+        {
+            var key = (row.TeamOne, row.TeamTwo, row.Division);
+            if (savedRelaxations.TryGetValue(key, out var saved))
+                ApplyRelaxations(row, saved);
+        }
+
         StatusMessage = $"Generated {result.ScheduledMatches.Count} matches. {result.UnscheduledMatches.Count} unscheduled.";
+    }
+
+    private static RelaxedConstraints CaptureRelaxations(UnscheduledMatchRow r) => new()
+    {
+        RelaxGroundFairness      = r.RelaxGroundFairness,
+        RelaxUmpireFairness      = r.RelaxUmpireFairness,
+        RelaxTimeSlotFairness    = r.RelaxTimeSlotFairness,
+        RelaxMaxGapRule          = r.RelaxMaxGapRule,
+        RelaxOneMatchPerWeekend  = r.RelaxOneMatchPerWeekend,
+        RelaxTimeSlotRestriction = r.RelaxTimeSlotRestriction,
+        RelaxDateRestriction     = r.RelaxDateRestriction,
+        RelaxDiscardedDates      = r.RelaxDiscardedDates
+    };
+
+    private static bool HasAnyRelaxation(RelaxedConstraints r) =>
+        r.RelaxGroundFairness || r.RelaxUmpireFairness || r.RelaxTimeSlotFairness ||
+        r.RelaxMaxGapRule || r.RelaxOneMatchPerWeekend || r.RelaxTimeSlotRestriction ||
+        r.RelaxDateRestriction || r.RelaxDiscardedDates;
+
+    private static void ApplyRelaxations(UnscheduledMatchRow row, RelaxedConstraints saved)
+    {
+        row.RelaxGroundFairness      = saved.RelaxGroundFairness;
+        row.RelaxUmpireFairness      = saved.RelaxUmpireFairness;
+        row.RelaxTimeSlotFairness    = saved.RelaxTimeSlotFairness;
+        row.RelaxMaxGapRule          = saved.RelaxMaxGapRule;
+        row.RelaxOneMatchPerWeekend  = saved.RelaxOneMatchPerWeekend;
+        row.RelaxTimeSlotRestriction = saved.RelaxTimeSlotRestriction;
+        row.RelaxDateRestriction     = saved.RelaxDateRestriction;
+        row.RelaxDiscardedDates      = saved.RelaxDiscardedDates;
     }
 
     [RelayCommand]
@@ -676,6 +742,7 @@ public partial class MainViewModel : ObservableObject
         FilterDivision = null;
         FilterTeam = null;
         FilterGround = null;
+        ScheduleSearchText = string.Empty;
     }
 
     private void ApplyFilters()
@@ -964,6 +1031,95 @@ public partial class MainViewModel : ObservableObject
         StatusMessage = "Move(s) applied and saved.";
     }
 
+    /// <summary>
+    /// Opens Move Analyzer for an affected match in the Unscheduled slot-selection panel.
+    /// On commit the match is moved in-place; the row is marked resolved so
+    /// ScheduleSelectedUnscheduled can proceed.
+    ///
+    /// The unscheduled match is passed as "virtually placed" additional-fixed context so that
+    /// the slot suggestions for the displaced match correctly exclude the target slot (where
+    /// the unscheduled match will be placed) and respect the unscheduled match's team
+    /// constraints (e.g. one-match-per-weekend for the unscheduled match's teams).
+    /// </summary>
+    [RelayCommand]
+    private void OpenMoveAnalyzerForAffectedMatch(AffectedSlotMatchRow? row)
+    {
+        if (row is null || CurrentLeague is null) return;
+        if (SelectedUnscheduledMatch is null || SelectedUnscheduledMoveOption?.SlotKey is not MoveSlotSuggestion targetSlot)
+        {
+            // Fallback: open without context if state is unexpectedly missing
+            OpenMoveAnalyzerForAffectedMatchCore(row, additionalFixed: null);
+            return;
+        }
+
+        // Create a virtual copy of the unscheduled match placed at the chosen target slot.
+        // Treating it as fixed causes SuggestMoves to exclude that slot from candidates for
+        // the displaced match and to count it in weekend-conflict checks for both teams.
+        var virtualMatch = new Match
+        {
+            TournamentName = SelectedUnscheduledMatch.Match.TournamentName,
+            DivisionName   = SelectedUnscheduledMatch.Match.DivisionName,
+            MatchType      = SelectedUnscheduledMatch.Match.MatchType,
+            TeamOne        = SelectedUnscheduledMatch.Match.TeamOne,
+            TeamTwo        = SelectedUnscheduledMatch.Match.TeamTwo,
+            Date           = targetSlot.Date,
+            Slot           = targetSlot.Slot,
+            Ground         = targetSlot.Ground,
+            IsFixed        = true  // treated as an immovable anchor in SuggestMoves
+        };
+
+        OpenMoveAnalyzerForAffectedMatchCore(row, additionalFixed: [virtualMatch]);
+    }
+
+    private void OpenMoveAnalyzerForAffectedMatchCore(AffectedSlotMatchRow row, IReadOnlyList<Match>? additionalFixed)
+    {
+        if (CurrentLeague is null) return;
+
+        var vm = new MoveAnalyzerViewModel(
+            matchToMove:     row.Match,
+            league:          CurrentLeague,
+            svc:             _schedulingService,
+            forbidden:       ForbiddenSlots.ToList(),
+            depth:           0,
+            additionalFixed: additionalFixed);
+
+        var window = new Views.MoveAnalyzerWindow(vm, owner: OwnerWindow ?? System.Windows.Application.Current.MainWindow);
+
+        // MoveAnalyzerWindow commits the move directly to Match objects; DialogResult=true means committed.
+        if (window.ShowDialog() == true)
+        {
+            row.IsManuallyResolved = true;
+            // Re-evaluate remaining non-resolved rows in case the move freed their auto-resolve slot.
+            RefreshAffectedMatchAutoResolve();
+            StatusMessage = $"Match #{row.Match.Sequence} resolved — click 'Schedule Match' when all are resolved.";
+        }
+    }
+
+    /// <summary>Re-checks auto-resolve status for rows that haven't been manually resolved yet.</summary>
+    private void RefreshAffectedMatchAutoResolve()
+    {
+        if (CurrentLeague is null) return;
+        foreach (var row in AffectedMatchesForSelectedSlot.Where(r => !r.IsManuallyResolved && !r.CanAutoResolve))
+        {
+            var options = _schedulingService.SuggestMoves(CurrentLeague, row.Match, ForbiddenSlots.ToList());
+            var best    = options.FirstOrDefault(o => o.AffectedMatchCount == 0);
+            if (best is not null)
+            {
+                // Replace the row with an updated one (CanAutoResolve is init-only, so we swap it)
+                int idx = AffectedMatchesForSelectedSlot.IndexOf(row);
+                AffectedMatchesForSelectedSlot[idx] = new AffectedSlotMatchRow
+                {
+                    Match             = row.Match,
+                    MatchTitle        = row.MatchTitle,
+                    CurrentSlot       = row.CurrentSlot,
+                    CanAutoResolve    = true,
+                    ResolutionDisplay = $"✅ → {best.Date:MM/dd/yyyy} {best.Slot.Start:HH:mm} @ {best.Ground.Name}",
+                    BestSuggestion    = best
+                };
+            }
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Reschedule umpiring
     // ─────────────────────────────────────────────────────────────────────────
@@ -988,6 +1144,26 @@ public partial class MainViewModel : ObservableObject
         RenderSchedule();
         StatusMessage = $"Umpiring rescheduled for {CurrentLeague.Matches.Count(m => !m.IsFixed)} matches " +
                         $"({CurrentLeague.Matches.Count(m => m.IsFixed)} fixed preserved).";
+    }
+
+    /// <summary>
+    /// Reshuffles ground assignments across all non-fixed matches to balance usage among
+    /// teams, then re-runs umpiring. Fixed matches are completely untouched.
+    /// Hard constraint: no two matches share the same ground + date + time slot.
+    /// </summary>
+    [RelayCommand]
+    private async Task RescheduleGroundAndUmpiring()
+    {
+        if (CurrentLeague is null) { StatusMessage = "Open a league first."; return; }
+
+        _schedulingService.RescheduleGroundAndUmpiring(CurrentLeague);
+
+        await _leagueService.SaveLeagueAsync(CurrentLeague);
+        RenderSchedule();
+        int nonFixed = CurrentLeague.Matches.Count(m => !m.IsFixed);
+        int fixed_   = CurrentLeague.Matches.Count(m => m.IsFixed);
+        StatusMessage = $"Ground & umpiring rescheduled for {nonFixed} non-fixed matches " +
+                        $"({fixed_} fixed preserved).";
     }
 
     // Keep old relay commands as no-ops so any stale XAML bindings don't crash
@@ -1323,6 +1499,29 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        // ── Resolve affected matches before placing the unscheduled match ──────
+        if (AffectedMatchesForSelectedSlot.Count > 0)
+        {
+            var unresolved = AffectedMatchesForSelectedSlot.Where(r => !r.IsResolved).ToList();
+            if (unresolved.Count > 0)
+            {
+                StatusMessage = $"⚠ {unresolved.Count} affected match(es) still need resolution. " +
+                                "Use 'Resolve' on each orange row, or select a different slot.";
+                return;
+            }
+
+            // Apply auto-resolutions for affected matches that the engine can handle directly.
+            foreach (var affected in AffectedMatchesForSelectedSlot.Where(r => r.CanAutoResolve && !r.IsManuallyResolved))
+            {
+                if (affected.BestSuggestion is not null)
+                {
+                    affected.Match.Date   = affected.BestSuggestion.Date;
+                    affected.Match.Slot   = affected.BestSuggestion.Slot;
+                    affected.Match.Ground = affected.BestSuggestion.Ground;
+                }
+            }
+        }
+
         row.Match.Date   = date;
         row.Match.Slot   = effectiveSlot;
         row.Match.Ground = ground;
@@ -1334,6 +1533,9 @@ public partial class MainViewModel : ObservableObject
         UnscheduledMatches.Remove(row);
         CurrentLeague.UnscheduledMatches = UnscheduledMatches.Select(r => r.Match).ToList();
         SelectedUnscheduledMatch = null;
+        SelectedUnscheduledMoveOption = null;
+        AffectedMatchesForSelectedSlot.Clear();
+        OnPropertyChanged(nameof(HasAffectedMatches));
 
         // Clear panel inputs ready for next match
         ManualScheduleDate = string.Empty;
@@ -1367,7 +1569,42 @@ public partial class MainViewModel : ObservableObject
         if (value is not null)
             value.PropertyChanged += OnUnscheduledRowConstraintChanged;
 
+        // Clear slot selection and affected matches when switching unscheduled rows
+        SelectedUnscheduledMoveOption = null;
+        AffectedMatchesForSelectedSlot.Clear();
+        OnPropertyChanged(nameof(HasAffectedMatches));
+
         RefreshUnscheduledSuggestions(value);
+    }
+
+    /// <summary>
+    /// When the user selects a slot in the Available Slots Analysis grid, compute which
+    /// already-scheduled matches would be displaced and show them in the affected-matches grid.
+    /// Green rows can be auto-resolved by the engine; orange rows need the Move Analyzer.
+    /// </summary>
+    partial void OnSelectedUnscheduledMoveOptionChanged(MoveOptionViewModel? value)
+    {
+        AffectedMatchesForSelectedSlot.Clear();
+        OnPropertyChanged(nameof(HasAffectedMatches));
+        if (value?.SlotKey is not MoveSlotSuggestion suggestion || CurrentLeague is null) return;
+
+        foreach (var m in suggestion.AffectedMatchList)
+        {
+            var options = _schedulingService.SuggestMoves(CurrentLeague, m, ForbiddenSlots.ToList());
+            var best    = options.FirstOrDefault(o => o.AffectedMatchCount == 0);
+            AffectedMatchesForSelectedSlot.Add(new AffectedSlotMatchRow
+            {
+                Match             = m,
+                MatchTitle        = $"#{m.Sequence}  {m.TeamOne} vs {m.TeamTwo}",
+                CurrentSlot       = $"{m.Date:MM/dd/yyyy} {m.Slot?.Start:HH:mm} @ {m.Ground?.Name}",
+                CanAutoResolve    = best is not null,
+                ResolutionDisplay = best is null
+                    ? "⚠ No free slot — click Resolve to open Move Analyzer"
+                    : $"✅ → {best.Date:MM/dd/yyyy} {best.Slot.Start:HH:mm} @ {best.Ground.Name}",
+                BestSuggestion    = best
+            });
+        }
+        OnPropertyChanged(nameof(HasAffectedMatches));
     }
 
     private void OnUnscheduledRowConstraintChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -1729,4 +1966,31 @@ public sealed class PairingRow
     public int    Index { get; init; }
     public string TeamA { get; init; } = string.Empty;
     public string TeamB { get; init; } = string.Empty;
+}
+
+// ── AffectedSlotMatchRow — shown when an unscheduled slot has conflicts ────────
+/// <summary>
+/// One row in the "Affected Matches" grid that appears when the user selects a
+/// slot in the Available Slots Analysis that is occupied by a scheduled match.
+/// Green rows (CanAutoResolve=true) will be moved automatically when "Schedule Match"
+/// is clicked. Orange rows need manual resolution via the embedded Move Analyzer.
+/// </summary>
+public sealed class AffectedSlotMatchRow : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
+{
+    public Match  Match             { get; init; } = null!;
+    public string MatchTitle        { get; init; } = string.Empty;
+    public string CurrentSlot       { get; init; } = string.Empty;
+    public bool   CanAutoResolve    { get; init; }
+    public string ResolutionDisplay { get; init; } = string.Empty;
+    public MoveSlotSuggestion? BestSuggestion { get; init; }
+
+    private bool _isManuallyResolved;
+    public bool IsManuallyResolved
+    {
+        get => _isManuallyResolved;
+        set { _isManuallyResolved = value; OnPropertyChanged(); OnPropertyChanged(nameof(IsResolved)); }
+    }
+
+    /// <summary>True when this affected match is handled (auto or manually resolved).</summary>
+    public bool IsResolved => CanAutoResolve || IsManuallyResolved;
 }

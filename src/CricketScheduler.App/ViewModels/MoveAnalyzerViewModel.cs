@@ -18,6 +18,13 @@ public sealed partial class MoveAnalyzerViewModel : ObservableObject
     private readonly League _league;
     private readonly SchedulingService _svc;
     private readonly List<ForbiddenSlot> _forbidden;
+    /// <summary>
+    /// Extra matches treated as fixed context when computing slot suggestions for
+    /// <see cref="MatchToMove"/>. Used when this analyzer is opened for a displaced match
+    /// from the unscheduled panel — the virtually-placed unscheduled match is passed here
+    /// so the unscheduled match's target slot is excluded from the suggestion pool.
+    /// </summary>
+    private readonly IReadOnlyList<Match>? _additionalFixed;
 
     /// <summary>Set by MoveAnalyzerWindow after construction — called when user commits a move.</summary>
     public Action? OnCommitAction { get; set; }
@@ -56,20 +63,24 @@ public sealed partial class MoveAnalyzerViewModel : ObservableObject
         League league,
         SchedulingService svc,
         List<ForbiddenSlot> forbidden,
-        int depth)
+        int depth,
+        IReadOnlyList<Match>? additionalFixed = null)
     {
-        MatchToMove  = matchToMove;
-        _league      = league;
-        _svc         = svc;
-        _forbidden   = forbidden;
-        Depth        = depth;
+        MatchToMove     = matchToMove;
+        _league         = league;
+        _svc            = svc;
+        _forbidden      = forbidden;
+        Depth           = depth;
+        _additionalFixed = additionalFixed;
         LoadSlotOptions();
     }
 
     private void LoadSlotOptions()
     {
         SlotOptions.Clear();
-        var suggestions = _svc.SuggestMoves(_league, MatchToMove, _forbidden);
+        // Pass additionalFixed so the unscheduled match's target slot is treated as occupied
+        // when computing suggestions for a displaced (affected) match.
+        var suggestions = _svc.SuggestMoves(_league, MatchToMove, _forbidden, additionalFixed: _additionalFixed);
         foreach (var s in suggestions)
         {
             SlotOptions.Add(new SlotOptionRow

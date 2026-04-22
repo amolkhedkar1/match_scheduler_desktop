@@ -58,14 +58,22 @@ public sealed partial class SchedulingService
     ///   user has NOT relaxed (date blocks, time-slot restrictions, blackout dates, gap rule).
     ///   When RelaxOneMatchPerWeekend is true, same-weekend matches are NOT counted as affected.
     /// </summary>
+    /// <param name="additionalFixed">
+    /// Optional extra matches to treat as fixed context (their slots are excluded from
+    /// the candidate pool and they participate in constraint checks). Used when computing
+    /// suggestions for a displaced match in the unscheduled panel — the virtually-placed
+    /// unscheduled match is passed here so the target slot is correctly excluded.
+    /// </param>
     public List<MoveSlotSuggestion> SuggestMoves(
         League league, Match match, List<ForbiddenSlot> forbidden,
-        RelaxedConstraints? relaxed = null)
+        RelaxedConstraints? relaxed = null,
+        IReadOnlyList<Match>? additionalFixed = null)
     {
         // Fixed matches: exclude their slots and keep as hard context.
         var fixedMatches = league.Matches
             .Where(m => m.IsFixed && m != match
                      && m.Date is not null && m.Slot is not null && m.Ground is not null)
+            .Concat(additionalFixed?.Where(m => m.Date is not null && m.Slot is not null && m.Ground is not null) ?? [])
             .ToList();
 
         var fixedSlotKeys = fixedMatches
@@ -344,6 +352,97 @@ public sealed partial class SchedulingService
         }
 
         AssignUmpires(nonFixedMatches, league.Divisions, allMatches: league.Matches);
+    }
+
+    /// <summary>
+    /// Reshuffles ground assignments for all non-fixed matches to balance ground usage
+    /// across teams, then re-runs umpiring assignment.
+    ///
+    /// Hard guarantees:
+    ///   • Fixed matches are completely untouched (ground, umpires, date, slot all preserved).
+    ///   • No two matches share the same ground + date + timeslot after redistribution.
+    ///   • Date and timeslot of every match remain unchanged.
+    ///
+    /// Ground-fairness algorithm (greedy, per date+slot group):
+    ///   1. For each (date, timeslot) group of non-fixed matches, collect the tournament
+    ///      grounds not already locked by fixed matches in that exact slot.
+    ///   2. Assign grounds to the group's matches one at a time, always picking the ground
+    ///      that minimises the combined ground-usage count for the two playing teams, so
+    ///      underused grounds are preferred.
+    ///   3. Each ground is consumed once per group (no double-booking within a slot).
+    /// </summary>
+    public void RescheduleGroundAndUmpiring(League league)
+    {
+        var fixedMatches = league.Matches.Where(m => m.IsFixed).ToList();
+        var nonFixed = league.Matches
+            .Where(m => !m.IsFixed && m.Date is not null && m.Slot is not null)
+            .ToList();
+
+        // Track combined ground-usage (team, ground) → count, seeded from fixed matches.
+        var groundUsage = new Dictionary<(string Team, string Ground), int>(
+            EqualityComparer<(string, string)>.Create(
+                (a, b) => StringComparer.OrdinalIgnoreCase.Equals(a.Item1, b.Item1) &&
+                           StringComparer.OrdinalIgnoreCase.Equals(a.Item2, b.Item2),
+                o => StringComparer.OrdinalIgnoreCase.GetHashCode(o.Item1) ^
+                     StringComparer.OrdinalIgnoreCase.GetHashCode(o.Item2)));
+
+        void Inc(string team, string ground)
+        {
+            var key = (team, ground);
+            groundUsage[key] = groundUsage.GetValueOrDefault(key, 0) + 1;
+        }
+
+        foreach (var m in fixedMatches.Where(m => m.Ground is not null))
+        {
+            Inc(m.TeamOne, m.Ground!.Name);
+            Inc(m.TeamTwo, m.Ground!.Name);
+        }
+
+        var allGrounds = league.Tournament.Grounds;
+
+        // Process each (date, timeslot) group so no ground is double-booked within a slot.
+        var groups = nonFixed
+            .GroupBy(m => (m.Date!.Value, m.Slot!.Start))
+            .OrderBy(g => g.Key.Value).ThenBy(g => g.Key.Start);
+
+        foreach (var group in groups)
+        {
+            var (date, slotStart) = group.Key;
+
+            // Grounds locked by fixed matches at this exact date+slot.
+            var fixedGroundsHere = fixedMatches
+                .Where(m => m.Date == date && m.Slot?.Start == slotStart && m.Ground is not null)
+                .Select(m => m.Ground!.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // Available grounds for redistribution (tournament grounds minus fixed-locked ones).
+            var available = allGrounds
+                .Where(g => !fixedGroundsHere.Contains(g.Name))
+                .ToList();
+
+            var usedThisGroup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var match in group)
+            {
+                // Pick the ground that minimises combined prior usage for this team pair.
+                var bestGround = available
+                    .Where(g => !usedThisGroup.Contains(g.Name))
+                    .OrderBy(g =>
+                        groundUsage.GetValueOrDefault((match.TeamOne, g.Name), 0) +
+                        groundUsage.GetValueOrDefault((match.TeamTwo, g.Name), 0))
+                    .FirstOrDefault();
+
+                if (bestGround is null) continue; // more matches in slot than grounds — leave as-is
+
+                match.Ground = bestGround;
+                usedThisGroup.Add(bestGround.Name);
+                Inc(match.TeamOne, bestGround.Name);
+                Inc(match.TeamTwo, bestGround.Name);
+            }
+        }
+
+        // Re-run umpiring with updated ground assignments.
+        RescheduleUmpiring(league);
     }
 
     /// <summary>

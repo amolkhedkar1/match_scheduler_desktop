@@ -288,6 +288,7 @@ The main window hosts five tabs via a `TabControl`: **Tournament**, **Divisions*
 - **Delete Selected** — removes multiple matches at once
 - **Analyze Move** — opens Move Analyzer window for selected match
 - **🧑‍⚖️ Reschedule Umpiring** — clears and reassigns umpires on all non-fixed matches using priority rules
+- **🏟 Reschedule Ground & Umpiring** — reshuffles ground assignments for all non-fixed matches to balance usage, then re-runs umpiring; fixed matches fully preserved
 - Schedule stats label (e.g. "23 of 28 matches shown")
 
 **Filter / search bar:**
@@ -312,16 +313,33 @@ The main window hosts five tabs via a `TabControl`: **Tournament**, **Divisions*
 **Unscheduled Matches section (below scheduled grid):**
 - Persisted to/from `unscheduled.csv` on every save/load
 - **Manual schedule panel** (above unscheduled grid): Date, Time Slot, Ground, Umpiring Team inputs
-- **Schedule Selected** button — assigns panel inputs to selected unscheduled match, moves it to scheduled grid
-- **Available Slots Expander** — populated by `SuggestMoves` when an unscheduled row is selected; double-clicking a slot row fills the panel inputs automatically
-- **Constraint Relaxation** per-row checkboxes (see §8.3)
+- **Schedule Selected** button — assigns panel inputs to selected unscheduled match, moves it to scheduled grid; also applies all pending conflict resolutions (auto and manual) before placing the match
+- **Available Slots Expander** — populated by `SuggestMoves` when an unscheduled row is selected; double-clicking a slot row fills the panel inputs automatically; **single-clicking** a row also loads the Affected Matches panel below
+
+**Affected Matches panel (inside Available Slots Expander — visible when selected slot has conflicts):**
+- Appears automatically below the slot analysis grid when the selected slot is occupied by scheduled matches
+- Bound to `AffectedMatchesForSelectedSlot` (`ObservableCollection<AffectedSlotMatchRow>`) in `MainViewModel`
+- Each row represents one scheduled match that would be displaced if the unscheduled match is placed at the selected slot
+- Row colours:
+  - 🟢 **Green** (`CanAutoResolve=true`) — engine found a free alternative slot; will be moved automatically when "Schedule Match" is clicked; no user action needed
+  - 🟠 **Orange** (`CanAutoResolve=false`) — no free slot exists; user must click **🔍 Resolve** to open the Move Analyzer for that match
+  - 💚 **Bold green** (`IsManuallyResolved=true`) — user resolved via Move Analyzer; the match has already been moved in-place
+- **Resolve button** — shown only for unresolvable rows; opens `MoveAnalyzerWindow` via `OpenMoveAnalyzerForAffectedMatchCommand`; on `DialogResult=true` marks row `IsManuallyResolved=true` and calls `RefreshAffectedMatchAutoResolve()` to re-check other rows; the Move Analyzer receives the unscheduled match as `additionalFixed` so its target slot is excluded from the displaced match's slot suggestions and weekend constraints are correctly checked
+- `RefreshAffectedMatchAutoResolve()` — after a Move Analyzer commit, replaces any row that went from "no free slot" to "free slot available" (swaps the row because `CanAutoResolve` is `init`-only)
+- **Scheduling guard** — `ScheduleSelectedUnscheduled` checks `AffectedMatchesForSelectedSlot` before placing the match:
+  - If any row has `IsResolved=false` → sets `StatusMessage` error and returns
+  - Applies `BestSuggestion` to all auto-resolvable matches, then schedules the unscheduled match
+- `OnSelectedUnscheduledMoveOptionChanged` (partial) — fired when the user selects a slot row; calls `SuggestMoves` for each match in `suggestion.AffectedMatchList` to determine auto-resolvability
+- `OnSelectedUnscheduledMatchChanged` — clears `SelectedUnscheduledMoveOption` and `AffectedMatchesForSelectedSlot` when the user switches to a different unscheduled match
+
+**Constraint Relaxation** per-row checkboxes (see §8.3)
 
 **Move Analyzer (separate window — `MoveAnalyzerWindow`):**
 - Shows match being moved + affected teams
 - `SlotOptions` DataGrid: Date, Time, Ground, Affected Matches, Fairness Score, Recommendation
   - Shows **both free slots** (0 affected) and **occupied slots** (≥1 displaced non-fixed matches)
   - 🟢 Recommended rows = 0 collisions + high fairness score
-- **Commit Move** — calls `FinaliseMove()` which saves (`SaveLeagueAsync`) and re-renders the grid
+- **Commit Move** — calls `FinaliseMove()` which saves (`SaveLeagueAsync`) and re-renders the grid (standalone use); in Affected Matches panel use, the move is applied in-place and the caller marks the row resolved without calling `FinaliseMove` until "Schedule Match" is clicked
 - **Cancel** — closes window without saving
 
 ### 6.5 Statistics Tab (`StatisticsView`)
@@ -464,8 +482,10 @@ string? ManualScheduleTimeSlot, ManualScheduleGround, ManualScheduleUmpire
 | `DeleteSelectedMatches` | Multi-row delete (takes `DataGrid` parameter) |
 | `AddForbiddenSlot / Remove` | Manages forbidden slot list |
 | `AnalyzeMove` | Opens `MoveAnalyzerWindow`; after `DialogResult==true`, awaits `FinaliseMove()` |
-| `ScheduleSelectedUnscheduled` | Schedule selected unscheduled match using panel inputs |
+| `ScheduleSelectedUnscheduled` | Schedule selected unscheduled match using panel inputs; applies all pending conflict resolutions (auto + manual) first |
 | `ApplyUnscheduledSlot` | Fill panel inputs from analysis row double-click |
+| `OpenMoveAnalyzerForAffectedMatch` | Open Move Analyzer for an affected match in the slot-conflict panel; passes unscheduled match as `additionalFixed` so its target slot is excluded; marks row `IsManuallyResolved=true` on commit |
+| `RescheduleGroundAndUmpiring` | Balance ground assignments across all non-fixed matches (greedy per date+slot group), then re-run umpiring; fixed matches untouched |
 | `ClearFilters` | Resets all three filter dropdowns |
 
 ### WPF Binding rules
@@ -577,6 +597,20 @@ When user clicks **Analyze Move** on a selected match:
 7. If a child-level sub-analyzer commits a move, the parent analyzer **refreshes its slot options** so conflicts resolved in the child are reflected in the parent grid
 
 Selecting an unscheduled match also triggers `SuggestMoves` → populates `UnscheduledMoveOptions`; double-clicking a row fills the manual schedule panel inputs.
+
+**`additionalFixed` parameter (context-aware suggestions for displaced matches):**
+When the Move Analyzer is opened for a *displaced* (affected) match from the unscheduled slot panel, a virtual copy of the unscheduled match is created with its target date/slot/ground and `IsFixed=true`. This is passed as `additionalFixed` to `MoveAnalyzerViewModel` → `SuggestMoves`. Effect:
+- The target slot (where the unscheduled match will be placed) is added to `fixedSlotKeys` and excluded from candidate slots for the displaced match.
+- The unscheduled match's teams participate in the same-weekend conflict check, so the displaced match's suggested slots correctly avoid weekends where the unscheduled match's teams are already committed.
+- Child-level analyzers (resolving displaced-of-displaced) do NOT receive `additionalFixed` — they only need to find any free slot for the next-level match.
+
+**`RescheduleGroundAndUmpiring` algorithm:**
+1. Seed a `(team, ground) → count` usage table from fixed matches.
+2. For each (date, timeslot) group of non-fixed matches (ordered by date then start time):
+   a. Identify grounds locked by fixed matches in this exact slot.
+   b. From the remaining tournament grounds, assign one ground per match, always picking the ground with the lowest combined usage count for the two playing teams (underused grounds preferred).
+   c. Each ground is consumed once per group — no double-booking within a slot.
+3. After all groups are processed, call `RescheduleUmpiring` to re-assign umpires on the now-updated ground layout.
 
 ---
 
