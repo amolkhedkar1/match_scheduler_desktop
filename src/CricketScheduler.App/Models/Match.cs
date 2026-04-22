@@ -14,11 +14,14 @@ public sealed class Match
     public Ground? Ground { get; set; }
     public bool IsFixed { get; set; }
 
-    public string? UmpireOne { get; set; }
-    public string? UmpireTwo { get; set; }
+    public string? UmpireOne   { get; set; }
+    public string? UmpireTwo   { get; set; }
     public string? UmpireThree { get; set; }
-    public string? UmpireFour { get; set; }
+    public string? UmpireFour  { get; set; }
     public string? MatchManager { get; set; }
-    public string? ScorerOne { get; set; }
-    public string? ScorerTwo { get; set; }
+    public string? ScorerOne   { get; set; }
+    public string? ScorerTwo   { get; set; }
+
+    /// <summary>Populated for unscheduled matches — reason why scheduling failed.</summary>
+    public string? UnscheduledReason { get; set; }
 }

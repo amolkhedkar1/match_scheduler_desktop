@@ -18,3 +18,22 @@ public sealed class InverseBoolConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => value is bool b && !b;
 }
+
+/// <summary>
+/// Converts bool → Visibility in inverse: false → Visible, true → Collapsed.
+/// Used for the "Resolve" button which shows only when CanAutoResolve=false.
+/// Usage: Visibility="{Binding CanAutoResolve, Converter={StaticResource InverseBoolVis}}"
+/// </summary>
+[ValueConversion(typeof(bool), typeof(System.Windows.Visibility))]
+public sealed class InverseBoolToVisibilityConverter : IValueConverter
+{
+    public static readonly InverseBoolToVisibilityConverter Instance = new();
+
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is bool b && b
+            ? System.Windows.Visibility.Collapsed
+            : System.Windows.Visibility.Visible;
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

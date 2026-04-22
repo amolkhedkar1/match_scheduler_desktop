@@ -1,39 +1,38 @@
-DivisionName,TeamName,IsRoundRobin,MatchesPerTeam
-Div A,World XI,True,
-Div A,Telugu Yuvatha,True,
-Div A,Kansas Kings,True,
-Div A,KC Raptors,True,
-Div A,Lakes XI,True,
-Div A,LIMRA Defenders,True,
-Div A,Pirates,True,
-Div A,Tuskers,True,
-Div A,KC Rockers,True,
-Div B,Rising Stars,True,
-Div B,Blue Titans,True,
-Div B,Wolves,True,
-Div B,Sunrisers Lakes XI,True,
-Div B,Pehlwan XI,True,
-Div B,KC Royals,True,
-Div B,Dominators,True,
-Div B,Nepal XI,True,
-Div B,Killer XI,True,
-Div C,Jaguars,False,8
-Div C,Prime XI,False,8
-Div C,Sixers,False,8
-Div C,Bharat XI,False,8
-Div C,Kansas Eagles,False,8
-Div C,KC Blues,False,8
-Div C,Midwest Warriors,False,8
-Div C,Ace XI,False,8
-Div C,KC Lions,False,8
-Div C,Blue Caps,False,8
-Div D,Punjab Eagles,False,8
-Div D,Rc's XI,False,8
-Div D,KC Legends,False,8
-Div D,Shivams,False,8
-Div D,Elites XI,False,8
-Div D,Bengal Warriors,False,8
-Div D,KC Fusion,False,8
-Div D,KC Khiladis,False,8
-Div D,KC Supernovas,False,8
-Div D,Punjab XI,False,8
+DivisionName,TeamName,IsRoundRobin,MatchesPerTeam,Pairings
+Div A,Telugu Yuvatha,True,,
+Div A,Kansas Kings,True,,
+Div A,KC Raptors,True,,
+Div A,Lakes XI,True,,
+Div A,LIMRA Defenders,True,,
+Div A,Pirates,True,,
+Div A,Tuskers,True,,
+Div A,KC Rockers,True,,
+Div B,Rising Stars,True,,
+Div B,Blue Titans,True,,
+Div B,Wolves,True,,
+Div B,Sunrisers Lakes XI,True,,
+Div B,Pehlwan XI,True,,
+Div B,KC Royals,True,,
+Div B,Dominators,True,,
+Div B,Nepal XI,True,,
+Div B,Killer XI,True,,
+Div C,Jaguars,False,8,Ace XI~Bharat XI;Ace XI~Blue Caps;Ace XI~Jaguars;Ace XI~Kansas Eagles;Ace XI~KC Blues;Ace XI~KC Lions;Ace XI~Midwest Warriors;Ace XI~Prime XI;Bharat XI~Blue Caps;Bharat XI~Jaguars;Bharat XI~Kansas Eagles;Bharat XI~KC Blues;Bharat XI~KC Lions;Bharat XI~Midwest Warriors;Bharat XI~Sixers;Blue Caps~Jaguars;Blue Caps~Kansas Eagles;Blue Caps~KC Blues;Blue Caps~KC Lions;Blue Caps~Prime XI;Blue Caps~Sixers;Jaguars~Kansas Eagles;Jaguars~KC Blues;Jaguars~Midwest Warriors;Jaguars~Prime XI;Jaguars~Sixers;Kansas Eagles~KC Lions;Kansas Eagles~Midwest Warriors;Kansas Eagles~Prime XI;Kansas Eagles~Sixers;KC Blues~KC Lions;KC Blues~Midwest Warriors;KC Blues~Prime XI;KC Blues~Sixers;KC Lions~Midwest Warriors;KC Lions~Prime XI;KC Lions~Sixers;Midwest Warriors~Prime XI;Midwest Warriors~Sixers;Prime XI~Sixers
+Div C,Prime XI,False,8,
+Div C,Sixers,False,8,
+Div C,Bharat XI,False,8,
+Div C,Kansas Eagles,False,8,
+Div C,KC Blues,False,8,
+Div C,Midwest Warriors,False,8,
+Div C,Ace XI,False,8,
+Div C,KC Lions,False,8,
+Div C,Blue Caps,False,8,
+Div D,Punjab Eagles,False,8,Bengal Warriors~Elites XI;Bengal Warriors~KC Fusion;Bengal Warriors~KC Khiladis;Bengal Warriors~KC Legends;Bengal Warriors~KC Supernovas;Bengal Warriors~Punjab Eagles;Bengal Warriors~Punjab XI;Bengal Warriors~Rc's XI;Elites XI~KC Fusion;Elites XI~KC Khiladis;Elites XI~KC Legends;Elites XI~KC Supernovas;Elites XI~Punjab Eagles;Elites XI~Punjab XI;Elites XI~Shivams;KC Fusion~KC Khiladis;KC Fusion~KC Legends;KC Fusion~KC Supernovas;KC Fusion~Punjab Eagles;KC Fusion~Rc's XI;KC Fusion~Shivams;KC Khiladis~KC Legends;KC Khiladis~KC Supernovas;KC Khiladis~Punjab XI;KC Khiladis~Rc's XI;KC Khiladis~Shivams;KC Legends~Punjab Eagles;KC Legends~Punjab XI;KC Legends~Rc's XI;KC Legends~Shivams;KC Supernovas~Punjab Eagles;KC Supernovas~Punjab XI;KC Supernovas~Rc's XI;KC Supernovas~Shivams;Punjab Eagles~Punjab XI;Punjab Eagles~Rc's XI;Punjab Eagles~Shivams;Punjab XI~Rc's XI;Punjab XI~Shivams;Rc's XI~Shivams
+Div D,Rc's XI,False,8,
+Div D,KC Legends,False,8,
+Div D,Shivams,False,8,
+Div D,Elites XI,False,8,
+Div D,Bengal Warriors,False,8,
+Div D,KC Fusion,False,8,
+Div D,KC Khiladis,False,8,
+Div D,KC Supernovas,False,8,
+Div D,Punjab XI,False,8,

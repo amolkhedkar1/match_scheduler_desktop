@@ -6,8 +6,163 @@ namespace CricketScheduler.App.Services;
 public sealed partial class SchedulingService
 {
     public SchedulingResult Generate(League league, List<Match> fixedMatches, List<ForbiddenSlot> forbidden)
+        => RunOptimisedSchedule(league, fixedMatches, forbidden);
+
+
+    /// <summary>
+    /// Global pre-filter: blocks slots covered by non-division-specific forbidden entries.
+    /// Division-specific entries are skipped here and applied per-match by IsForbiddenForMatch.
+    /// </summary>
+    private static bool IsForbidden(SchedulableSlot slot, List<ForbiddenSlot> forbidden)
     {
-        // Remove fixed matches from the pool to regenerate; keep them scheduled
+        foreach (var f in forbidden)
+        {
+            if (f.Division is not null) continue; // division-specific handled per-match
+            bool dateMatch   = f.Date      is null || f.Date == slot.Date;
+            bool groundMatch = f.GroundName is null || string.Equals(f.GroundName, slot.Ground.Name, StringComparison.OrdinalIgnoreCase);
+            bool slotMatch   = f.TimeSlot  is null || (f.TimeSlot.Start == slot.TimeSlot.Start && f.TimeSlot.End == slot.TimeSlot.End);
+            if (dateMatch && groundMatch && slotMatch) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Per-match forbidden check: includes the Division field so division-specific forbidden
+    /// slots are respected. Null Division = wildcard (applies to all divisions).
+    /// </summary>
+    private static bool IsForbiddenForMatch(SchedulableSlot slot, string divisionName, List<ForbiddenSlot> forbidden)
+    {
+        foreach (var f in forbidden)
+        {
+            bool divisionMatch = f.Division is null || string.Equals(f.Division, divisionName, StringComparison.OrdinalIgnoreCase);
+            if (!divisionMatch) continue;
+            bool dateMatch   = f.Date      is null || f.Date == slot.Date;
+            bool groundMatch = f.GroundName is null || string.Equals(f.GroundName, slot.Ground.Name, StringComparison.OrdinalIgnoreCase);
+            bool slotMatch   = f.TimeSlot  is null || (f.TimeSlot.Start == slot.TimeSlot.Start && f.TimeSlot.End == slot.TimeSlot.End);
+            if (dateMatch && groundMatch && slotMatch) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns all tournament slots the given match could potentially move to.
+    ///
+    /// Move Analyzer mode (relaxed == null):
+    ///   Shows every slot that is not fixed-occupied, globally forbidden, or the match's current
+    ///   slot.  No constraint filtering is applied — every possible slot is shown.
+    ///   AffectedMatchCount = (matches at exact slot) + (same-weekend matches for either team),
+    ///   so the caller can see exactly what would need to cascade.
+    ///
+    /// Unscheduled-panel mode (relaxed != null):
+    ///   Same slot universe, but additionally filters out slots that violate constraints the
+    ///   user has NOT relaxed (date blocks, time-slot restrictions, blackout dates, gap rule).
+    ///   When RelaxOneMatchPerWeekend is true, same-weekend matches are NOT counted as affected.
+    /// </summary>
+    public List<MoveSlotSuggestion> SuggestMoves(
+        League league, Match match, List<ForbiddenSlot> forbidden,
+        RelaxedConstraints? relaxed = null)
+    {
+        // Fixed matches: exclude their slots and keep as hard context.
+        var fixedMatches = league.Matches
+            .Where(m => m.IsFixed && m != match
+                     && m.Date is not null && m.Slot is not null && m.Ground is not null)
+            .ToList();
+
+        var fixedSlotKeys = fixedMatches
+            .Select(m => $"{m.Date}|{m.Ground!.Name}|{m.Slot!.Start:HH\\:mm}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Candidate slots: all weekend slots minus globally-forbidden, fixed-occupied, and current slot.
+        var allSlots = SchedulingMatrixBuilder.BuildSlots(league.Tournament)
+            .Where(slot => !IsForbidden(slot, forbidden))
+            .Where(slot => !(slot.Date == match.Date && slot.TimeSlot.Start == match.Slot?.Start
+                && string.Equals(slot.Ground.Name, match.Ground?.Name, StringComparison.OrdinalIgnoreCase)))
+            .Where(slot => !fixedSlotKeys.Contains(
+                $"{slot.Date}|{slot.Ground.Name}|{slot.TimeSlot.Start:HH\\:mm}"))
+            .ToList();
+
+        var otherNonFixed = league.Matches.Where(m => m != match && !m.IsFixed).ToList();
+        var results = new List<MoveSlotSuggestion>();
+
+        foreach (var slot in allSlots)
+        {
+            if (IsForbiddenForMatch(slot, match.DivisionName, forbidden)) continue;
+
+            // Matches occupying this exact slot — they would be displaced.
+            var displacedAtSlot = otherNonFixed.Where(m =>
+                m.Date == slot.Date &&
+                string.Equals(m.Ground?.Name, slot.Ground.Name, StringComparison.OrdinalIgnoreCase) &&
+                m.Slot?.Start == slot.TimeSlot.Start).ToList();
+
+            var contextWithoutSlotOccupants = otherNonFixed.Except(displacedAtSlot).Concat(fixedMatches).ToList();
+
+            // Same-weekend matches for either team: they would also need to move (1-per-weekend rule).
+            // When RelaxOneMatchPerWeekend is on, they are not counted as affected.
+            bool weekendRelaxed = relaxed?.RelaxOneMatchPerWeekend ?? false;
+            var sameWeekendConflicts = weekendRelaxed
+                ? new List<Match>()
+                : contextWithoutSlotOccupants
+                    .Where(m => !m.IsFixed &&
+                        ConstraintEvaluator.IsWeekendEqual(m.Date, slot.Date) &&
+                        (ConstraintEvaluator.TeamMatch(match.TeamOne, m) ||
+                         ConstraintEvaluator.TeamMatch(match.TeamTwo, m)))
+                    .ToList();
+
+            var allAffected = displacedAtSlot.Concat(sameWeekendConflicts).ToList();
+            var contextAfterAllDisplaced = contextWithoutSlotOccupants.Except(sameWeekendConflicts).ToList();
+
+            // Unscheduled-panel mode: apply per-flag constraint filters.
+            // Move Analyzer mode: no filtering — every slot is shown.
+            if (relaxed is not null)
+            {
+                if (!relaxed.RelaxDiscardedDates && league.Tournament.DiscardedDates.Contains(slot.Date))
+                    continue;
+                if (!relaxed.RelaxDateRestriction &&
+                    (ConstraintEvaluator.IsFullDayBlocked(match.TeamOne, slot.Date, league.Constraints) ||
+                     ConstraintEvaluator.IsFullDayBlocked(match.TeamTwo, slot.Date, league.Constraints)))
+                    continue;
+                if (!relaxed.RelaxTimeSlotRestriction &&
+                    (ConstraintEvaluator.IsTimeSlotBlocked(match.TeamOne, slot, league.Constraints) ||
+                     ConstraintEvaluator.IsTimeSlotBlocked(match.TeamTwo, slot, league.Constraints)))
+                    continue;
+                if (!relaxed.RelaxMaxGapRule &&
+                    ConstraintEvaluator.ViolatesNoGapRule(match, slot, contextAfterAllDisplaced))
+                    continue;
+            }
+
+            double fairness = SlotScorer.Score(match, slot, league, contextAfterAllDisplaced);
+            results.Add(new MoveSlotSuggestion
+            {
+                Date               = slot.Date,
+                Slot               = slot.TimeSlot,
+                Ground             = slot.Ground,
+                AffectedMatchCount = allAffected.Count,
+                AffectedMatchList  = allAffected,
+                FairnessScore      = fairness,
+                IsRecommended      = allAffected.Count == 0 && fairness > 80
+            });
+        }
+
+        return results.OrderBy(r => r.AffectedMatchCount).ThenByDescending(r => r.FairnessScore).ToList();
+    }
+
+    /// <summary>
+    /// Compatibility overload — delegates to the main Generate with empty fixed/forbidden lists.
+    /// Kept so any legacy callers still compile.
+    /// </summary>
+    public SchedulingResult Generate(League league)
+        => Generate(league, [], []);
+
+    /// <summary>
+    /// Greedy-best-first scheduler with forbidden slot filtering and multi-ordering
+    /// optimisation. Tries several candidate orderings, picks the one that schedules
+    /// the most matches, then refines using a slot-matrix-aware backtrack pass.
+    /// </summary>
+    private SchedulingResult RunOptimisedSchedule(
+        League league,
+        List<Match> fixedMatches,
+        List<ForbiddenSlot> forbidden)
+    {
         var generatedMatches = MatchGenerator.GenerateMatches(league)
             .Where(m => !fixedMatches.Any(f =>
                 string.Equals(f.TeamOne, m.TeamOne, StringComparison.OrdinalIgnoreCase) &&
@@ -15,22 +170,75 @@ public sealed partial class SchedulingService
                 string.Equals(f.DivisionName, m.DivisionName, StringComparison.OrdinalIgnoreCase)))
             .ToList();
 
-        var schedulableSlots = SchedulingMatrixBuilder.BuildSlots(league.Tournament)
+        // Build the slot matrix once, stripping forbidden slots
+        var allSlots = SchedulingMatrixBuilder.BuildSlots(league.Tournament)
             .Where(slot => !IsForbidden(slot, forbidden))
             .ToList();
 
-        var scheduled = new List<Match>(fixedMatches);
-        var unscheduled = new List<(Match Match, string Reason)>();
+        // Try multiple orderings to maximise scheduled count
+        var orderings = new List<IEnumerable<Match>>
+        {
+            // Most-constrained first
+            generatedMatches
+                .OrderByDescending(m => league.Constraints.Count(c => c.TeamName == m.TeamOne || c.TeamName == m.TeamTwo))
+                .ThenBy(m => m.DivisionName),
+            // Division-balanced
+            generatedMatches
+                .OrderBy(m => m.DivisionName)
+                .ThenByDescending(m => league.Constraints.Count(c => c.TeamName == m.TeamOne || c.TeamName == m.TeamTwo)),
+            // Fewest-available-slots first (most difficult)
+            generatedMatches
+                .OrderBy(m => allSlots.Count(slot => ConstraintEvaluator.IsSlotAllowed(m, slot, league, fixedMatches, out _)))
+                .ThenBy(m => m.DivisionName),
+        };
 
-        var candidates = generatedMatches
-            .OrderByDescending(m => league.Constraints.Count(c => c.TeamName == m.TeamOne || c.TeamName == m.TeamTwo))
-            .ThenBy(m => m.DivisionName)
-            .ToList();
+        List<Match>? bestScheduled = null;
+        List<(Match Match, string Reason)>? bestUnscheduled = null;
+
+        foreach (var ordering in orderings)
+        {
+            var (sched, unsched) = TryScheduleOrdering(ordering.ToList(), allSlots, fixedMatches, league, forbidden);
+            if (bestScheduled is null || sched.Count > bestScheduled.Count)
+            {
+                bestScheduled  = sched;
+                bestUnscheduled = unsched;
+            }
+            // Perfect solution — stop early
+            if (bestUnscheduled!.Count == 0) break;
+        }
+
+        // Backtrack pass: for each unscheduled match, try displacing a non-fixed
+        // already-scheduled match to free up a slot
+        if (bestUnscheduled!.Count > 0)
+        {
+            var (improved, stillUnscheduled) = BacktrackImprove(
+                bestScheduled!, bestUnscheduled!, allSlots, league, forbidden);
+            bestScheduled  = improved;
+            bestUnscheduled = stillUnscheduled;
+        }
+
+        // Only assign umpires to non-fixed matches — fixed match umpires are preserved as-is.
+        var toUmpire = bestScheduled!.Where(m => !m.IsFixed).ToList();
+        AssignUmpires(toUmpire, league.Divisions, allMatches: bestScheduled);
+        for (var i = 0; i < bestScheduled!.Count; i++) bestScheduled[i].Sequence = i + 1;
+        return new SchedulingResult(bestScheduled!, bestUnscheduled!);
+    }
+
+    private static (List<Match> Scheduled, List<(Match, string)> Unscheduled) TryScheduleOrdering(
+        List<Match> candidates,
+        List<SchedulableSlot> allSlots,
+        List<Match> fixedMatches,
+        League league,
+        List<ForbiddenSlot> forbidden)
+    {
+        var scheduled  = new List<Match>(fixedMatches);
+        var unscheduled = new List<(Match, string)>();
 
         foreach (var match in candidates)
         {
-            var best = schedulableSlots
-                .Where(slot => ConstraintEvaluator.IsSlotAllowed(match, slot, league, scheduled, out _))
+            var best = allSlots
+                .Where(slot => !IsForbiddenForMatch(slot, match.DivisionName, forbidden) &&
+                               ConstraintEvaluator.IsSlotAllowed(match, slot, league, scheduled, out _))
                 .Select(slot => new { Slot = slot, Score = SlotScorer.Score(match, slot, league, scheduled) })
                 .OrderByDescending(x => x.Score)
                 .FirstOrDefault();
@@ -39,169 +247,215 @@ public sealed partial class SchedulingService
             match.Date = best.Slot.Date; match.Slot = best.Slot.TimeSlot; match.Ground = best.Slot.Ground;
             scheduled.Add(match);
         }
-
-        AssignUmpires(scheduled, league.Divisions);
-        for (var i = 0; i < scheduled.Count; i++) scheduled[i].Sequence = i + 1;
-        return new SchedulingResult(scheduled, unscheduled);
-    }
-
-    private static bool IsForbidden(SchedulableSlot slot, List<ForbiddenSlot> forbidden)
-    {
-        foreach (var f in forbidden)
-        {
-            bool dateMatch  = f.Date is null  || f.Date == slot.Date;
-            bool groundMatch = f.GroundName is null || string.Equals(f.GroundName, slot.Ground.Name, StringComparison.OrdinalIgnoreCase);
-            bool slotMatch  = f.TimeSlot is null || (f.TimeSlot.Start == slot.TimeSlot.Start && f.TimeSlot.End == slot.TimeSlot.End);
-            if (dateMatch && groundMatch && slotMatch) return true;
-        }
-        return false;
-    }
-
-    public List<MoveSlotSuggestion> SuggestMoves(
-        League league, Match match, List<ForbiddenSlot> forbidden)
-    {
-        var allSlots = SchedulingMatrixBuilder.BuildSlots(league.Tournament)
-            .Where(slot => !IsForbidden(slot, forbidden))
-            .Where(slot => !(slot.Date == match.Date && slot.TimeSlot.Start == match.Slot?.Start && string.Equals(slot.Ground.Name, match.Ground?.Name, StringComparison.OrdinalIgnoreCase)))
-            .ToList();
-
-        var otherMatches = league.Matches.Where(m => m != match && !m.IsFixed).ToList();
-        var results = new List<MoveSlotSuggestion>();
-
-        foreach (var slot in allSlots)
-        {
-            if (!ConstraintEvaluator.IsSlotAllowed(match, slot, league, otherMatches, out _)) continue;
-
-            // Count how many other matches would be displaced (same ground+date+time)
-            int affected = otherMatches.Count(m =>
-                m.Date == slot.Date && m.Ground?.Name == slot.Ground.Name &&
-                m.Slot?.Start == slot.TimeSlot.Start);
-
-            double fairness = SlotScorer.Score(match, slot, league, otherMatches);
-            results.Add(new MoveSlotSuggestion
-            {
-                Date = slot.Date, Slot = slot.TimeSlot, Ground = slot.Ground,
-                AffectedMatchCount = affected,
-                FairnessScore = fairness,
-                IsRecommended = affected == 0 && fairness > 80
-            });
-        }
-
-        return results.OrderBy(r => r.AffectedMatchCount).ThenByDescending(r => r.FairnessScore).ToList();
-    }
-
-    public SchedulingResult Generate(League league)
-    {
-        var generatedMatches = MatchGenerator.GenerateMatches(league);
-        var schedulableSlots = SchedulingMatrixBuilder.BuildSlots(league.Tournament);
-        var scheduled = new List<Match>();
-        var unscheduled = new List<(Match Match, string Reason)>();
-
-        var candidates = generatedMatches
-            .OrderByDescending(m => league.Constraints.Count(c => c.TeamName == m.TeamOne || c.TeamName == m.TeamTwo))
-            .ThenBy(m => m.DivisionName)
-            .ToList();
-
-        foreach (var match in candidates)
-        {
-            var best = schedulableSlots
-                .Where(slot => ConstraintEvaluator.IsSlotAllowed(match, slot, league, scheduled, out _))
-                .Select(slot => new { Slot = slot, Score = SlotScorer.Score(match, slot, league, scheduled) })
-                .OrderByDescending(x => x.Score)
-                .FirstOrDefault();
-
-            if (best is null)
-            {
-                unscheduled.Add((match, "No valid slot due to constraints and available matrix."));
-                continue;
-            }
-
-            match.Date = best.Slot.Date;
-            match.Slot = best.Slot.TimeSlot;
-            match.Ground = best.Slot.Ground;
-            scheduled.Add(match);
-        }
-
-        AssignUmpires(scheduled, league.Divisions);
-
-        for (var i = 0; i < scheduled.Count; i++)
-        {
-            scheduled[i].Sequence = i + 1;
-        }
-
-        return new SchedulingResult(scheduled, unscheduled);
+        return (scheduled, unscheduled);
     }
 
     /// <summary>
-    /// Assigns two umpires to each match. Both umpires must come from the SAME team
-    /// (i.e. a different team from a different division acts as the "umpiring team"
-    /// providing both officials for that match). Umpiring duty is distributed evenly.
-    /// Preference is given to teams whose adjacent match is on the same day/ground
-    /// to minimise travel and waiting.
+    /// For each unscheduled match: find a slot that IS available; if none, try bumping
+    /// one non-fixed already-scheduled match to another slot to free a slot for it.
     /// </summary>
-    private static void AssignUmpires(List<Match> matches, List<Division> divisions)
+    private static (List<Match>, List<(Match, string)>) BacktrackImprove(
+        List<Match> scheduled,
+        List<(Match Match, string Reason)> unscheduled,
+        List<SchedulableSlot> allSlots,
+        League league,
+        List<ForbiddenSlot> forbidden)
     {
-        // Track how many times each team has umpired
+        var result   = new List<Match>(scheduled);
+        var remaining = new List<(Match Match, string Reason)>();
+
+        foreach (var (match, _) in unscheduled)
+        {
+            bool placed = false;
+
+            // First attempt: direct slot (constraints may have relaxed after earlier backtrack placements)
+            var direct = allSlots
+                .Where(s => !IsForbiddenForMatch(s, match.DivisionName, forbidden) &&
+                            ConstraintEvaluator.IsSlotAllowed(match, s, league, result, out _))
+                .OrderByDescending(s => SlotScorer.Score(match, s, league, result))
+                .FirstOrDefault();
+
+            if (direct is not null)
+            {
+                match.Date = direct.Date; match.Slot = direct.TimeSlot; match.Ground = direct.Ground;
+                result.Add(match); placed = true;
+            }
+            else
+            {
+                // Try bumping one non-fixed match
+                var bumped = result.Where(m => !m.IsFixed).FirstOrDefault(m =>
+                {
+                    // Would removing m free a valid slot for 'match'?
+                    var temp = result.Where(x => x != m).ToList();
+                    return allSlots.Any(s => !IsForbiddenForMatch(s, match.DivisionName, forbidden) &&
+                        ConstraintEvaluator.IsSlotAllowed(match, s, league, temp, out _));
+                });
+
+                if (bumped is not null)
+                {
+                    result.Remove(bumped);
+                    var freed = allSlots
+                        .Where(s => !IsForbiddenForMatch(s, match.DivisionName, forbidden) &&
+                                    ConstraintEvaluator.IsSlotAllowed(match, s, league, result, out _))
+                        .OrderByDescending(s => SlotScorer.Score(match, s, league, result))
+                        .First();
+                    match.Date = freed.Date; match.Slot = freed.TimeSlot; match.Ground = freed.Ground;
+                    result.Add(match);
+
+                    // Re-schedule the bumped match
+                    var rebest = allSlots
+                        .Where(s => !IsForbiddenForMatch(s, bumped.DivisionName, forbidden) &&
+                                    ConstraintEvaluator.IsSlotAllowed(bumped, s, league, result, out _))
+                        .OrderByDescending(s => SlotScorer.Score(bumped, s, league, result))
+                        .FirstOrDefault();
+                    if (rebest is not null)
+                    {
+                        bumped.Date = rebest.Date; bumped.Slot = rebest.TimeSlot; bumped.Ground = rebest.Ground;
+                        result.Add(bumped);
+                    }
+                    else
+                    {
+                        bumped.Date = null; bumped.Slot = null; bumped.Ground = null;
+                        remaining.Add((bumped, "Displaced by backtrack — could not be re-placed."));
+                    }
+                    placed = true;
+                }
+            }
+
+            if (!placed) remaining.Add((match, "No valid slot found even after backtrack attempt."));
+        }
+        return (result, remaining);
+    }
+
+    /// <summary>
+    /// Public entry point: re-assigns umpires for all non-fixed matches while
+    /// preserving umpire assignments on fixed matches.
+    /// </summary>
+    public void RescheduleUmpiring(League league)
+    {
+        var fixedMatches    = league.Matches.Where(m => m.IsFixed).ToList();
+        var nonFixedMatches = league.Matches.Where(m => !m.IsFixed).ToList();
+
+        // Clear umpires on non-fixed matches before re-assigning
+        foreach (var m in nonFixedMatches)
+        {
+            m.UmpireOne = null;
+            m.UmpireTwo = null;
+        }
+
+        AssignUmpires(nonFixedMatches, league.Divisions, allMatches: league.Matches);
+    }
+
+    /// <summary>
+    /// Assigns umpiring teams to each match in <paramref name="matchesToUmpire"/> using:
+    /// Priority 1 — team with a match in an ADJACENT slot on the same date + ground
+    ///              (physically at the ground already)
+    /// Priority 2 — team with NO match in the same calendar week (ISO week)
+    ///              (least travel burden)
+    /// Priority 3 — any eligible team (lowest cumulative umpire load — fairness fallback)
+    ///
+    /// Hard rules (always enforced):
+    ///   • A team NEVER umpires in its own division.
+    ///   • A team NEVER umpires when it is playing (same date + slot, any ground).
+    ///   • A team NEVER umpires at a ground where it is NOT playing on that day
+    ///     (teams playing at a different ground that day are excluded).
+    /// </summary>
+    private static void AssignUmpires(
+        List<Match> matchesToUmpire,
+        List<Division> divisions,
+        List<Match>? allMatches = null)
+    {
+        allMatches ??= matchesToUmpire;
+
         var umpireLoad = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var t in divisions.SelectMany(d => d.Teams))
             umpireLoad[t.Name] = 0;
 
-        // Build lookup: division name -> set of team names
-        var divTeams = divisions.ToDictionary(
-            d => d.Name,
-            d => new HashSet<string>(d.Teams.Select(t => t.Name), StringComparer.OrdinalIgnoreCase),
-            StringComparer.OrdinalIgnoreCase);
-
-        var ordered = matches
+        var ordered = matchesToUmpire
             .Where(m => m.Date is not null && m.Slot is not null)
             .OrderBy(m => m.Date).ThenBy(m => m.Slot!.Start)
             .ToList();
 
-        for (var i = 0; i < ordered.Count; i++)
-        {
-            var match = ordered[i];
+        var byDate = allMatches
+            .Where(m => m.Date is not null)
+            .GroupBy(m => m.Date!.Value)
+            .ToDictionary(g => g.Key, g => g.ToList());
 
-            // Candidate umpiring teams: any team NOT in the same division as the match
-            var candidateTeams = divisions
+        static int IsoWeek(DateOnly d) =>
+            System.Globalization.ISOWeek.GetWeekOfYear(d.ToDateTime(TimeOnly.MinValue));
+
+        foreach (var match in ordered)
+        {
+            // Hard rule 1: never umpire own division
+            var eligible = divisions
                 .Where(d => !string.Equals(d.Name, match.DivisionName, StringComparison.OrdinalIgnoreCase))
                 .SelectMany(d => d.Teams.Select(t => t.Name))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            if (!candidateTeams.Any()) continue; // single-division league — skip
+            if (eligible.Count == 0) continue;
 
-            // Continuity bonus: prefer a team whose adjacent match shares the same date/ground
-            var adjacentTeams = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            void AddAdjacent(Match? adj)
+            byDate.TryGetValue(match.Date!.Value, out var dayMatches);
+            dayMatches ??= [];
+
+            // Hard rules 2+3: team cannot umpire while playing in the same slot (any ground)
+            var playingNow = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in dayMatches.Where(m => m.Slot?.Start == match.Slot!.Start))
             {
-                if (adj is null) return;
-                if (adj.Date == match.Date && adj.Ground?.Name == match.Ground?.Name)
+                playingNow.Add(m.TeamOne);
+                playingNow.Add(m.TeamTwo);
+            }
+            eligible = eligible.Where(t => !playingNow.Contains(t)).ToList();
+            if (eligible.Count == 0) continue;
+
+            // Hard rule 4: team cannot umpire at a ground where it is not playing that day.
+            // Teams playing at a DIFFERENT ground today are excluded (even in a different slot).
+            var playingAtDifferentGround = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in dayMatches.Where(m =>
+                !string.Equals(m.Ground?.Name, match.Ground?.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                playingAtDifferentGround.Add(m.TeamOne);
+                playingAtDifferentGround.Add(m.TeamTwo);
+            }
+            eligible = eligible.Where(t => !playingAtDifferentGround.Contains(t)).ToList();
+            if (eligible.Count == 0) continue;
+
+            // Priority 1: adjacent slot (prev/next) on same date + same ground
+            var adjacentTeams = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in dayMatches.Where(m =>
+                string.Equals(m.Ground?.Name, match.Ground?.Name, StringComparison.OrdinalIgnoreCase)
+                && m.Slot is not null && m != match))
+            {
+                if (m.Slot!.End == match.Slot!.Start || m.Slot.Start == match.Slot.End)
                 {
-                    adjacentTeams.Add(adj.TeamOne);
-                    adjacentTeams.Add(adj.TeamTwo);
+                    adjacentTeams.Add(m.TeamOne);
+                    adjacentTeams.Add(m.TeamTwo);
                 }
             }
-            AddAdjacent(i > 0 ? ordered[i - 1] : null);
-            AddAdjacent(i < ordered.Count - 1 ? ordered[i + 1] : null);
 
-            // Score each candidate team: lower umpire load is better, adjacency gives bonus
-            var bestTeam = candidateTeams
-                .OrderBy(t => umpireLoad.GetValueOrDefault(t, 0))
-                .ThenByDescending(t => adjacentTeams.Contains(t) ? 1 : 0)
-                .First();
+            // Priority 2: team with no match in the same ISO calendar week
+            int matchWeek = IsoWeek(match.Date!.Value);
+            var teamsWithMatchThisWeek = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in allMatches.Where(m => m.Date is not null && IsoWeek(m.Date!.Value) == matchWeek))
+            {
+                teamsWithMatchThisWeek.Add(m.TeamOne);
+                teamsWithMatchThisWeek.Add(m.TeamTwo);
+            }
 
-            // Both umpires come from bestTeam — they are the two members of that team
-            // For teams with only 1 player listed, UmpireTwo = same name (edge case)
-            var teamMembers = divTeams.Values
-                .SelectMany(s => s)
-                .Where(t => string.Equals(t, bestTeam, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var p1 = eligible.Where(t => adjacentTeams.Contains(t))
+                              .OrderBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
+            var p2 = eligible.Where(t => !teamsWithMatchThisWeek.Contains(t))
+                              .OrderBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
+            var p3 = eligible.OrderBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
 
-            // In our model a "team" is a single entity — so Umpire1 = Umpire2 = team name
-            // This reflects "Team X provides 2 umpires for this match"
+            string bestTeam;
+            if      (p1.Count > 0) bestTeam = p1.First();
+            else if (p2.Count > 0) bestTeam = p2.First();
+            else if (p3.Count > 0) bestTeam = p3.First();
+            else continue;
+
             match.UmpireOne = bestTeam;
             match.UmpireTwo = bestTeam;
-
             umpireLoad[bestTeam] = umpireLoad.GetValueOrDefault(bestTeam, 0) + 1;
         }
     }
@@ -218,7 +472,12 @@ internal static class MatchGenerator
         var matches = new List<Match>();
         foreach (var division in league.Divisions)
         {
-            var teams = division.Teams.Select(t => t.Name).OrderBy(x => x).ToList();
+            // Always sort alphabetically, case-insensitive — must match GeneratePairingsForDivision order
+            var teams = division.Teams
+                .Select(t => t.Name)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
             if (teams.Count < 2) continue;
 
             if (division.IsRoundRobin)
@@ -230,14 +489,20 @@ internal static class MatchGenerator
             }
             else
             {
-                // Fixed matches per team mode:
-                // Each team should play exactly MatchesPerTeam opponents.
-                // We generate pairs using a round-robin rotation then trim
-                // so that no team exceeds MatchesPerTeam games.
-                int target = division.MatchesPerTeam ?? (teams.Count - 1);
-                target = Math.Max(1, Math.Min(target, teams.Count - 1));
-                var pairs = FixedMatchesPairings(teams, target);
-                matches.AddRange(pairs.Select(p => CreateMatch(league.Tournament.Name, division.Name, p.t1, p.t2)));
+                // Fixed mode: use pre-computed pairings if available (generated on Division page),
+                // otherwise fall back to internal pairing algorithm using the same sorted list
+                if (division.FixedPairings.Count > 0)
+                {
+                    matches.AddRange(division.FixedPairings
+                        .Select(p => CreateMatch(league.Tournament.Name, division.Name, p.TeamA, p.TeamB)));
+                }
+                else
+                {
+                    int target = division.MatchesPerTeam ?? (teams.Count - 1);
+                    target = Math.Max(1, Math.Min(target, teams.Count - 1));
+                    var pairs = FixedMatchesPairings(teams, target);
+                    matches.AddRange(pairs.Select(p => CreateMatch(league.Tournament.Name, division.Name, p.t1, p.t2)));
+                }
             }
         }
 
@@ -336,6 +601,31 @@ internal static class SchedulingMatrixBuilder
 
 internal static class ConstraintEvaluator
 {
+    /// <summary>
+    /// Checks only team-availability constraints — does NOT reject slots that are already
+    /// occupied by another match. Used by move analysis so that "overwriting" a slot (which
+    /// displaces the occupying match) is a valid option for the user to consider.
+    /// </summary>
+    public static bool IsSlotAllowedForMove(Match match, SchedulableSlot slot, League league, List<Match> scheduled, out string reason)
+    {
+        reason = string.Empty;
+
+        var teamBusyThisWeekend = scheduled.Any(m =>
+            IsWeekendEqual(m.Date, slot.Date) &&
+            (TeamMatch(match.TeamOne, m) || TeamMatch(match.TeamTwo, m)));
+        if (teamBusyThisWeekend)
+        { reason = "Team already has a match this weekend."; return false; }
+
+        if (IsBlockedBySchedulingRequest(match.TeamOne, slot, league.Constraints) ||
+            IsBlockedBySchedulingRequest(match.TeamTwo, slot, league.Constraints))
+        { reason = "Scheduling request blocks this slot."; return false; }
+
+        if (ViolatesNoGapRule(match, slot, scheduled))
+        { reason = "Would violate max 2 consecutive no-match weekends."; return false; }
+
+        return true;
+    }
+
     public static bool IsSlotAllowed(Match match, SchedulableSlot slot, League league, List<Match> scheduled, out string reason)
     {
         reason = string.Empty;
@@ -491,13 +781,13 @@ internal static class ConstraintEvaluator
         return true;
     }
 
-    private static bool IsFullDayBlocked(string team, DateOnly date, List<SchedulingRequest> constraints) =>
+    internal static bool IsFullDayBlocked(string team, DateOnly date, List<SchedulingRequest> constraints) =>
         constraints.Any(c =>
             string.Equals(c.TeamName, team, StringComparison.OrdinalIgnoreCase) &&
             c.Date == date &&
             c.IsFullDayBlock);
 
-    private static bool IsTimeSlotBlocked(string team, SchedulableSlot slot, List<SchedulingRequest> constraints)
+    internal static bool IsTimeSlotBlocked(string team, SchedulableSlot slot, List<SchedulingRequest> constraints)
     {
         return constraints.Any(c =>
         {
@@ -533,7 +823,7 @@ internal static class ConstraintEvaluator
         return false;
     }
 
-    private static bool ViolatesNoGapRule(Match pending, SchedulableSlot candidate, List<Match> scheduled)
+    internal static bool ViolatesNoGapRule(Match pending, SchedulableSlot candidate, List<Match> scheduled)
     {
         var teams = new[] { pending.TeamOne, pending.TeamTwo };
         foreach (var team in teams)
@@ -567,7 +857,7 @@ internal static class ConstraintEvaluator
         return false;
     }
 
-    private static DateTime WeekendKey(DateOnly date)
+    internal static DateTime WeekendKey(DateOnly date)
     {
         var offsetToSaturday = date.DayOfWeek switch
         {
@@ -577,8 +867,8 @@ internal static class ConstraintEvaluator
         };
         return date.ToDateTime(TimeOnly.MinValue).AddDays(-offsetToSaturday);
     }
-    private static bool TeamMatch(string team, Match m) => string.Equals(team, m.TeamOne, StringComparison.OrdinalIgnoreCase) || string.Equals(team, m.TeamTwo, StringComparison.OrdinalIgnoreCase);
-    private static bool IsWeekendEqual(DateOnly? left, DateOnly right) => left is not null && WeekendKey(left.Value) == WeekendKey(right);
+    internal static bool TeamMatch(string team, Match m) => string.Equals(team, m.TeamOne, StringComparison.OrdinalIgnoreCase) || string.Equals(team, m.TeamTwo, StringComparison.OrdinalIgnoreCase);
+    internal static bool IsWeekendEqual(DateOnly? left, DateOnly right) => left is not null && WeekendKey(left.Value) == WeekendKey(right);
 }
 
 internal static class SlotScorer
@@ -634,7 +924,8 @@ public sealed partial class SchedulingService {
             var placed = false;
             foreach (var slot in slots.OrderBy(_ => Guid.NewGuid())) // randomise to avoid bias
             {
-                if (ConstraintEvaluator.IsSlotAllowedRelaxed(match, slot, league, scheduled, relaxed, out _))
+                if (!IsForbiddenForMatch(slot, match.DivisionName, forbidden) &&
+                    ConstraintEvaluator.IsSlotAllowedRelaxed(match, slot, league, scheduled, relaxed, out _))
                 {
                     match.Date   = slot.Date;
                     match.Slot   = slot.TimeSlot;
@@ -648,9 +939,57 @@ public sealed partial class SchedulingService {
                 unscheduled.Add((match, "Could not schedule even with relaxed constraints."));
         }
 
-        AssignUmpires(scheduled, league.Divisions);
+        // Only assign umpires to non-fixed matches — fixed match umpires are preserved as-is.
+        var toUmpire = scheduled.Where(m => !m.IsFixed).ToList();
+        AssignUmpires(toUmpire, league.Divisions, allMatches: scheduled);
         for (var i = 0; i < scheduled.Count; i++) scheduled[i].Sequence = i + 1;
         return new SchedulingResult(scheduled, unscheduled);
+    }
+
+    /// <summary>
+    /// Non-destructive reschedule: treats all currently scheduled matches (fixed and
+    /// non-fixed) as the starting context, then tries to place only the matches in
+    /// <see cref="League.UnscheduledMatches"/> into remaining free slots.
+    /// Fixed matches are never moved and their umpire assignments are preserved.
+    /// Non-fixed scheduled matches keep their current slots but may be displaced by
+    /// the backtrack pass if that is the only way to fit an unscheduled match.
+    /// </summary>
+    public SchedulingResult ReschedulePreservingExisting(League league, List<ForbiddenSlot> forbidden)
+    {
+        var allSlots = SchedulingMatrixBuilder.BuildSlots(league.Tournament)
+            .Where(s => !IsForbidden(s, forbidden))
+            .ToList();
+
+        // All currently scheduled matches form the initial pool.
+        // Fixed matches are immovable; non-fixed may be displaced if needed.
+        var scheduled = league.Matches.ToList();
+        var unscheduled = league.UnscheduledMatches.ToList();
+        var stillUnscheduled = new List<(Match, string)>();
+
+        // Direct placement pass: try to place each unscheduled match without moving anyone.
+        foreach (var match in unscheduled)
+        {
+            var best = allSlots
+                .Where(s => !IsForbiddenForMatch(s, match.DivisionName, forbidden) &&
+                            ConstraintEvaluator.IsSlotAllowed(match, s, league, scheduled, out _))
+                .OrderByDescending(s => SlotScorer.Score(match, s, league, scheduled))
+                .FirstOrDefault();
+
+            if (best is null) { stillUnscheduled.Add((match, "No valid slot respecting constraints.")); continue; }
+            match.Date = best.Date; match.Slot = best.TimeSlot; match.Ground = best.Ground;
+            scheduled.Add(match);
+        }
+
+        // Backtrack pass: displace a non-fixed match to free a slot if direct placement failed.
+        if (stillUnscheduled.Count > 0)
+            (scheduled, stillUnscheduled) = BacktrackImprove(scheduled, stillUnscheduled, allSlots, league, forbidden);
+
+        // Preserve fixed match umpires; only re-assign umpires to non-fixed matches.
+        var toUmpire = scheduled.Where(m => !m.IsFixed).ToList();
+        AssignUmpires(toUmpire, league.Divisions, allMatches: scheduled);
+
+        for (var i = 0; i < scheduled.Count; i++) scheduled[i].Sequence = i + 1;
+        return new SchedulingResult(scheduled, stillUnscheduled);
     }
 
 }

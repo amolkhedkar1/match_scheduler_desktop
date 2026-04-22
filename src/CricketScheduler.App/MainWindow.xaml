@@ -55,6 +55,10 @@
                 <views:SchedulerView/>
             </TabItem>
 
+            <TabItem Header="Statistics">
+                <views:StatisticsView/>
+            </TabItem>
+
         </TabControl>
     </Grid>
 </Window>

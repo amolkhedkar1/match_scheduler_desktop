@@ -17,9 +17,16 @@ public sealed class Division
     /// </summary>
     public int? MatchesPerTeam { get; set; }
 
+    /// <summary>
+    /// Pre-computed pairings for fixed mode — stored so scheduler can use them directly.
+    /// Each tuple is (TeamA, TeamB). Populated by GeneratePairings command on the Division page.
+    /// </summary>
+    public List<(string TeamA, string TeamB)> FixedPairings { get; set; } = [];
+
     /// <summary>Human-readable summary shown in UI lists.</summary>
     public string ModeSummary =>
         IsRoundRobin
             ? "Round Robin"
-            : $"Fixed — {MatchesPerTeam?.ToString() ?? "?"} matches/team";
+            : $"Fixed — {MatchesPerTeam?.ToString() ?? "?"} matches/team" +
+              (FixedPairings.Count > 0 ? $" ({FixedPairings.Count} pairs)" : "");
 }

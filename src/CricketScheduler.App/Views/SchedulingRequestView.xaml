@@ -118,15 +118,27 @@
                   ItemsSource="{Binding FilteredRequests}"
                   SelectedItem="{Binding SelectedRequest}"
                   SelectionMode="Extended"
-                  AutoGenerateColumns="False" IsReadOnly="True"
+                  AutoGenerateColumns="False" IsReadOnly="False"
                   GridLinesVisibility="Horizontal" HeadersVisibility="Column"
-                  CanUserResizeColumns="True">
+                  CanUserResizeColumns="True" CanUserSortColumns="True">
+            <DataGrid.ColumnHeaderStyle>
+                <Style TargetType="DataGridColumnHeader">
+                    <Setter Property="FontWeight" Value="SemiBold"/>
+                    <Setter Property="Padding" Value="6,4"/>
+                    <Setter Property="Background" Value="#F0F0F0"/>
+                    <Setter Property="BorderBrush" Value="#DDD"/>
+                    <Setter Property="BorderThickness" Value="0,0,1,1"/>
+                    <Setter Property="Cursor" Value="Hand"/>
+                    <Setter Property="ToolTip" Value="Click to sort · Shift+click for multi-column sort"/>
+                </Style>
+            </DataGrid.ColumnHeaderStyle>
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Team"       Binding="{Binding TeamName}"        Width="200"/>
-                <DataGridTextColumn Header="Date"       Binding="{Binding Date}"             Width="120"/>
-                <DataGridTextColumn Header="Start Time" Binding="{Binding StartTimeDisplay}" Width="120"/>
-                <DataGridTextColumn Header="End Time"   Binding="{Binding EndTimeDisplay}"   Width="120"/>
-                <DataGridTextColumn Header="Block Type" Binding="{Binding BlockType}"        Width="*"/>
+                <!-- Inline-editable columns: changes propagate to Request via setter -->
+                <DataGridTextColumn Header="Team ✎"       Binding="{Binding TeamName, UpdateSourceTrigger=LostFocus}"  Width="200" SortMemberPath="TeamName"/>
+                <DataGridTextColumn Header="Date"          Binding="{Binding Date}"                                    Width="120" IsReadOnly="True" SortMemberPath="Date"/>
+                <DataGridTextColumn Header="Start Time"    Binding="{Binding StartTimeDisplay}"                        Width="120" IsReadOnly="True" SortMemberPath="StartTimeDisplay"/>
+                <DataGridTextColumn Header="End Time"      Binding="{Binding EndTimeDisplay}"                          Width="120" IsReadOnly="True" SortMemberPath="EndTimeDisplay"/>
+                <DataGridTextColumn Header="Block Type"    Binding="{Binding BlockType}"                               Width="*"   IsReadOnly="True" SortMemberPath="BlockType"/>
             </DataGrid.Columns>
         </DataGrid>
     </Grid>

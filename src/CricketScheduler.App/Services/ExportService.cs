@@ -30,7 +30,8 @@ public sealed class ExportService
             UmpireFour = m.UmpireFour ?? string.Empty,
             MatchManager = m.MatchManager ?? string.Empty,
             Scorer1 = m.ScorerOne ?? string.Empty,
-            Scorer2 = m.ScorerTwo ?? string.Empty
+            Scorer2 = m.ScorerTwo ?? string.Empty,
+            IsFixed = m.IsFixed
         }).ToList();
 
         return _csvService.WriteAsync(outputPath, rows);

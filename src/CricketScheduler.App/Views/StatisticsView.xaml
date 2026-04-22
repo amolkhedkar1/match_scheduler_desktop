@@ -1,0 +1,80 @@
+<UserControl x:Class="CricketScheduler.App.Views.StatisticsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style x:Key="TotalHeaderStyle" TargetType="DataGridColumnHeader">
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Background" Value="#E0E0E0"/>
+        </Style>
+        <Style x:Key="TeamHeaderStyle" TargetType="DataGridColumnHeader">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style x:Key="StatGridStyle" TargetType="DataGrid">
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="AutoGenerateColumns" Value="True"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="CanUserReorderColumns" Value="False"/>
+            <Setter Property="GridLinesVisibility" Value="All"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#DDD"/>
+            <Setter Property="VerticalGridLinesBrush" Value="#DDD"/>
+            <Setter Property="AlternatingRowBackground" Value="#FAFAFA"/>
+            <Setter Property="RowBackground" Value="White"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="ColumnHeaderHeight" Value="32"/>
+            <Setter Property="RowHeight" Value="26"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="HorizontalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+        </Style>
+    </UserControl.Resources>
+
+    <DockPanel Margin="10">
+
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Background="#F5F5F5" BorderBrush="#CCC"
+                BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="0,0,0,8">
+            <TextBlock Text="Schedule Statistics" FontSize="14" FontWeight="SemiBold" Foreground="#333"/>
+        </Border>
+
+        <TabControl>
+
+            <!-- Tab 1: Matches Scheduled -->
+            <TabItem Header="Matches Scheduled">
+                <DockPanel Margin="4">
+                    <TextBlock DockPanel.Dock="Top" Margin="0,6,0,6" Foreground="#555" FontSize="11"
+                               Text="1 = match scheduled on that date for the team | Last row = matches per date | Last column = matches per team"/>
+                    <DataGrid x:Name="MatchesGrid"
+                              Style="{StaticResource StatGridStyle}"
+                              AutoGeneratingColumn="Grid_AutoGeneratingColumn"
+                              LoadingRow="Grid_LoadingRow"/>
+                </DockPanel>
+            </TabItem>
+
+            <!-- Tab 2: Umpiring Schedule -->
+            <TabItem Header="Umpiring Schedule">
+                <DockPanel Margin="4">
+                    <TextBlock DockPanel.Dock="Top" Margin="0,6,0,6" Foreground="#555" FontSize="11"
+                               Text="1 = team has umpiring duty on that date | Last row = teams umpiring per date | Last column = dates with umpiring per team"/>
+                    <DataGrid x:Name="UmpiringGrid"
+                              Style="{StaticResource StatGridStyle}"
+                              AutoGeneratingColumn="Grid_AutoGeneratingColumn"
+                              LoadingRow="Grid_LoadingRow"/>
+                </DockPanel>
+            </TabItem>
+
+            <!-- Tab 3: Ground Assignment -->
+            <TabItem Header="Ground Assignment">
+                <DockPanel Margin="4">
+                    <TextBlock DockPanel.Dock="Top" Margin="0,6,0,6" Foreground="#555" FontSize="11"
+                               Text="Number of matches each team plays at each ground | Last row = total matches per ground | Last column = total matches per team"/>
+                    <DataGrid x:Name="GroundGrid"
+                              Style="{StaticResource StatGridStyle}"
+                              AutoGeneratingColumn="Grid_AutoGeneratingColumn"
+                              LoadingRow="Grid_LoadingRow"/>
+                </DockPanel>
+            </TabItem>
+
+        </TabControl>
+    </DockPanel>
+</UserControl>

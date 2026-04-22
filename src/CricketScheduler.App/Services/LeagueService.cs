@@ -62,12 +62,27 @@ public sealed class LeagueService
 
         var divisions = await _csv.ReadAsync<DivisionCsv>(Path.Combine(path, "divisions.csv"));
         var grouped = divisions.GroupBy(d => d.DivisionName);
-        var divisionModels = grouped.Select(group => new Division
+        var divisionModels = grouped.Select(group =>
         {
-            Name = group.Key,
-            IsRoundRobin = group.First().IsRoundRobin,
-            MatchesPerTeam = group.First().MatchesPerTeam,
-            Teams = group.Select(x => new Team { Name = x.TeamName, DivisionName = x.DivisionName }).ToList()
+            var first = group.First();
+            // Deserialise pairings stored as "TeamA~TeamB;TeamA~TeamB;..."
+            var pairings = new List<(string TeamA, string TeamB)>();
+            if (!string.IsNullOrWhiteSpace(first.Pairings))
+            {
+                foreach (var pair in first.Pairings.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var parts = pair.Split('~');
+                    if (parts.Length == 2) pairings.Add((parts[0], parts[1]));
+                }
+            }
+            return new Division
+            {
+                Name = group.Key,
+                IsRoundRobin = first.IsRoundRobin,
+                MatchesPerTeam = first.MatchesPerTeam,
+                FixedPairings = pairings,
+                Teams = group.Select(x => new Team { Name = x.TeamName, DivisionName = x.DivisionName }).ToList()
+            };
         }).ToList();
 
         var constraints = await _csv.ReadAsync<ConstraintCsv>(Path.Combine(path, "constraints.csv"));
@@ -82,31 +97,45 @@ public sealed class LeagueService
         var matches = await _csv.ReadAsync<ScheduleCsv>(Path.Combine(path, "schedule.csv"));
         var modelMatches = matches.Select(m => new Match
         {
-            Sequence = m.Number,
+            Sequence       = m.Number,
             TournamentName = m.Series,
-            DivisionName = m.Division,
-            MatchType = m.MatchType,
-            TeamOne = m.TeamOne,
-            TeamTwo = m.TeamTwo,
-            Date = DateOnly.TryParseExact(m.Date, "MM/dd/yyyy", out var d) ? d : null,
-            Slot = TimeOnly.TryParse(m.Time, out var startTime) ? new TimeSlot { Start = startTime, End = startTime.AddHours(2) } : null,
-            Ground = string.IsNullOrWhiteSpace(m.Ground) ? null : new Ground { Name = m.Ground },
-            UmpireOne = m.UmpireOne,
-            UmpireTwo = m.UmpireTwo,
-            UmpireThree = m.UmpireThree,
-            UmpireFour = m.UmpireFour,
-            MatchManager = m.MatchManager,
-            ScorerOne = m.Scorer1,
-            ScorerTwo = m.Scorer2
+            DivisionName   = m.Division,
+            MatchType      = m.MatchType,
+            TeamOne        = m.TeamOne,
+            TeamTwo        = m.TeamTwo,
+            Date           = DateOnly.TryParseExact(m.Date, "MM/dd/yyyy", out var d) ? d : null,
+            Slot           = TimeOnly.TryParse(m.Time, out var startTime) ? new TimeSlot { Start = startTime, End = startTime.AddHours(2) } : null,
+            Ground         = string.IsNullOrWhiteSpace(m.Ground)       ? null : new Ground { Name = m.Ground },
+            UmpireOne      = m.UmpireOne,
+            UmpireTwo      = m.UmpireTwo,
+            UmpireThree    = m.UmpireThree,
+            UmpireFour     = m.UmpireFour,
+            MatchManager   = m.MatchManager,
+            ScorerOne      = m.Scorer1,
+            ScorerTwo      = m.Scorer2,
+            IsFixed        = m.IsFixed
+        }).ToList();
+
+        // Load unscheduled matches (file may not exist for older leagues)
+        var unscheduledRows = await _csv.ReadAsync<UnscheduledCsv>(Path.Combine(path, "unscheduled.csv"));
+        var unscheduledMatches = unscheduledRows.Select(u => new Match
+        {
+            TournamentName     = u.Series,
+            DivisionName       = u.Division,
+            MatchType          = u.MatchType,
+            TeamOne            = u.TeamOne,
+            TeamTwo            = u.TeamTwo,
+            UnscheduledReason  = u.Reason
         }).ToList();
 
         return new League
         {
-            Name = name,
-            Tournament = tournament,
-            Divisions = divisionModels,
-            Constraints = requests,
-            Matches = modelMatches
+            Name               = name,
+            Tournament         = tournament,
+            Divisions          = divisionModels,
+            Constraints        = requests,
+            Matches            = modelMatches,
+            UnscheduledMatches = unscheduledMatches
         };
     }
 
@@ -131,7 +160,11 @@ public sealed class LeagueService
             DivisionName = d.Name,
             TeamName = t.Name,
             IsRoundRobin = d.IsRoundRobin,
-            MatchesPerTeam = d.MatchesPerTeam
+            MatchesPerTeam = d.MatchesPerTeam,
+            // Only write pairings on the first team row; other rows leave it blank (loaded from first row)
+            Pairings = d.Teams.IndexOf(t) == 0
+                ? string.Join(';', d.FixedPairings.Select(p => $"{p.TeamA}~{p.TeamB}"))
+                : string.Empty
         }));
         await _csv.WriteAsync(Path.Combine(path, "divisions.csv"), divisions);
 
@@ -148,25 +181,38 @@ public sealed class LeagueService
         {
             var schedule = league.Matches.Select(m => new ScheduleCsv
             {
-                Number = m.Sequence,
-                Series = m.TournamentName,
-                Division = m.DivisionName,
-                MatchType = m.MatchType,
-                Date = m.Date?.ToString("MM/dd/yyyy") ?? string.Empty,
-                Time = m.Slot?.Start.ToString("h:mm tt") ?? string.Empty,
-                TeamOne = m.TeamOne,
-                TeamTwo = m.TeamTwo,
-                Ground = m.Ground?.Name ?? string.Empty,
-                UmpireOne = m.UmpireOne ?? string.Empty,
-                UmpireTwo = m.UmpireTwo ?? string.Empty,
+                Number      = m.Sequence,
+                Series      = m.TournamentName,
+                Division    = m.DivisionName,
+                MatchType   = m.MatchType,
+                Date        = m.Date?.ToString("MM/dd/yyyy") ?? string.Empty,
+                Time        = m.Slot?.Start.ToString("h:mm tt") ?? string.Empty,
+                TeamOne     = m.TeamOne,
+                TeamTwo     = m.TeamTwo,
+                Ground      = m.Ground?.Name ?? string.Empty,
+                UmpireOne   = m.UmpireOne   ?? string.Empty,
+                UmpireTwo   = m.UmpireTwo   ?? string.Empty,
                 UmpireThree = m.UmpireThree ?? string.Empty,
-                UmpireFour = m.UmpireFour ?? string.Empty,
+                UmpireFour  = m.UmpireFour  ?? string.Empty,
                 MatchManager = m.MatchManager ?? string.Empty,
-                Scorer1 = m.ScorerOne ?? string.Empty,
-                Scorer2 = m.ScorerTwo ?? string.Empty
+                Scorer1     = m.ScorerOne ?? string.Empty,
+                Scorer2     = m.ScorerTwo ?? string.Empty,
+                IsFixed     = m.IsFixed
             });
             await _csv.WriteAsync(Path.Combine(path, "schedule.csv"), schedule);
         }
+
+        // Always save unscheduled matches (even if empty, to clear stale file)
+        var unscheduled = league.UnscheduledMatches.Select(m => new UnscheduledCsv
+        {
+            Series    = m.TournamentName,
+            Division  = m.DivisionName,
+            MatchType = m.MatchType,
+            TeamOne   = m.TeamOne,
+            TeamTwo   = m.TeamTwo,
+            Reason    = m.UnscheduledReason ?? string.Empty
+        });
+        await _csv.WriteAsync(Path.Combine(path, "unscheduled.csv"), unscheduled);
     }
 
     private string GetLeaguePath(string name) => Path.Combine(_root, name);
@@ -198,6 +244,8 @@ public sealed class DivisionCsv
     public string TeamName { get; set; } = string.Empty;
     public bool IsRoundRobin { get; set; } = true;
     public int? MatchesPerTeam { get; set; }
+    /// <summary>Serialised pairings — "TeamA~TeamB;TeamC~TeamD;..." stored on first team row only.</summary>
+    public string Pairings { get; set; } = string.Empty;
 }
 
 public sealed class ConstraintCsv
@@ -210,20 +258,32 @@ public sealed class ConstraintCsv
 
 public sealed class ScheduleCsv
 {
-    public int Number { get; set; }
-    public string Series { get; set; } = string.Empty;
-    public string Division { get; set; } = string.Empty;
-    public string MatchType { get; set; } = string.Empty;
-    public string Date { get; set; } = string.Empty;
-    public string Time { get; set; } = string.Empty;
-    public string TeamOne { get; set; } = string.Empty;
-    public string TeamTwo { get; set; } = string.Empty;
-    public string Ground { get; set; } = string.Empty;
-    public string UmpireOne { get; set; } = string.Empty;
-    public string UmpireTwo { get; set; } = string.Empty;
-    public string UmpireThree { get; set; } = string.Empty;
-    public string UmpireFour { get; set; } = string.Empty;
+    public int    Number       { get; set; }
+    public string Series       { get; set; } = string.Empty;
+    public string Division     { get; set; } = string.Empty;
+    public string MatchType    { get; set; } = string.Empty;
+    public string Date         { get; set; } = string.Empty;
+    public string Time         { get; set; } = string.Empty;
+    public string TeamOne      { get; set; } = string.Empty;
+    public string TeamTwo      { get; set; } = string.Empty;
+    public string Ground       { get; set; } = string.Empty;
+    public string UmpireOne    { get; set; } = string.Empty;
+    public string UmpireTwo    { get; set; } = string.Empty;
+    public string UmpireThree  { get; set; } = string.Empty;
+    public string UmpireFour   { get; set; } = string.Empty;
     public string MatchManager { get; set; } = string.Empty;
-    public string Scorer1 { get; set; } = string.Empty;
-    public string Scorer2 { get; set; } = string.Empty;
+    public string Scorer1      { get; set; } = string.Empty;
+    public string Scorer2      { get; set; } = string.Empty;
+    /// <summary>Persists the Fixed flag so rescheduling honours it after reload.</summary>
+    public bool   IsFixed      { get; set; }
+}
+
+public sealed class UnscheduledCsv
+{
+    public string Series    { get; set; } = string.Empty;
+    public string Division  { get; set; } = string.Empty;
+    public string MatchType { get; set; } = string.Empty;
+    public string TeamOne   { get; set; } = string.Empty;
+    public string TeamTwo   { get; set; } = string.Empty;
+    public string Reason    { get; set; } = string.Empty;
 }

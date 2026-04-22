@@ -4,6 +4,7 @@
              xmlns:local="clr-namespace:CricketScheduler.App"
              x:Name="Root">
     <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
         <Style x:Key="Hdr" TargetType="TextBlock">
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -97,23 +98,26 @@
                 </StackPanel>
             </Border>
 
-            <!-- Save + Import -->
+            <!-- Save + Import + Append -->
             <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,10,0,0">
                 <Button Content="💾 Save" Command="{Binding SaveDivisionsCommand}"
                         FontWeight="SemiBold" Padding="12,7" Margin="0,0,6,0"
                         Background="#4CAF50" Foreground="White"/>
                 <Button Content="📂 Import CSV" Command="{Binding ImportDivisionsCommand}"
-                        Padding="10,7"/>
+                        Padding="10,7" Margin="0,0,6,0"/>
+                <Button Content="📎 Append CSV" Command="{Binding AppendDivisionsCommand}"
+                        Padding="10,7" ToolTip="Append teams/divisions from an additional CSV file"/>
             </StackPanel>
         </Grid>
 
-        <!-- ══ COL 2: Teams for selected division ═══════════════════════════ -->
+        <!-- ══ COL 2: Teams + Pairings for selected division ══════════════════ -->
         <Grid Grid.Column="2">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
+                <RowDefinition Height="200"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
             <TextBlock Grid.Row="0" Style="{StaticResource Hdr}">
@@ -128,7 +132,12 @@
                         CommandParameter="{Binding ElementName=TeamGrid}"
                         Padding="10,4" Margin="0,0,6,0"/>
                 <Button DockPanel.Dock="Left" Content="📂 Import Teams CSV"
-                        Command="{Binding ImportDivisionsCommand}" Padding="10,4"/>
+                        Command="{Binding ImportDivisionsCommand}" Padding="10,4" Margin="0,0,6,0"/>
+                <TextBox DockPanel.Dock="Left" Width="130"
+                         Text="{Binding NewTeamName, UpdateSourceTrigger=PropertyChanged}"
+                         Padding="4,3" ToolTip="New team name" Margin="0,0,4,0"/>
+                <Button DockPanel.Dock="Left" Content="➕ Add" Command="{Binding AddTeamCommand}"
+                        Padding="8,4"/>
             </DockPanel>
 
             <!-- Multi-select team grid -->
@@ -138,24 +147,58 @@
                       SelectionMode="Extended"
                       AutoGenerateColumns="False" IsReadOnly="True"
                       GridLinesVisibility="Horizontal" HeadersVisibility="Column"
-                      CanUserResizeColumns="True" MinHeight="200">
+                      CanUserResizeColumns="True" CanUserSortColumns="True">
+                <DataGrid.ColumnHeaderStyle>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="FontWeight" Value="SemiBold"/>
+                        <Setter Property="Padding" Value="6,4"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                        <Setter Property="ToolTip" Value="Click to sort · Shift+click for multi-column sort"/>
+                    </Style>
+                </DataGrid.ColumnHeaderStyle>
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="Team Name" Binding="{Binding Name}"         Width="*"/>
-                    <DataGridTextColumn Header="Division"  Binding="{Binding DivisionName}" Width="160"/>
+                    <DataGridTextColumn Header="Team Name" Binding="{Binding Name}"         Width="*"   SortMemberPath="Name"/>
+                    <DataGridTextColumn Header="Division"  Binding="{Binding DivisionName}" Width="160" SortMemberPath="DivisionName"/>
                 </DataGrid.Columns>
             </DataGrid>
 
-            <!-- Add team row -->
-            <Border Grid.Row="3" Style="{StaticResource Panel}" Margin="0,10,0,0">
-                <DockPanel LastChildFill="True">
-                    <Button DockPanel.Dock="Right" Content="➕ Add" Command="{Binding AddTeamCommand}"
-                            Padding="10,5" Margin="8,0,0,0"/>
-                    <Button DockPanel.Dock="Right" Content="🗑 Remove" Command="{Binding RemoveTeamCommand}"
-                            Padding="8,5" Margin="8,0,0,0"/>
-                    <TextBox Text="{Binding NewTeamName, UpdateSourceTrigger=PropertyChanged}"
-                             Padding="4" ToolTip="Team name"/>
-                </DockPanel>
+            <!-- Pairings section — visible only for Fixed-mode divisions -->
+            <Border Grid.Row="3" Style="{StaticResource Panel}" Margin="0,8,0,0"
+                    Visibility="{Binding SelectedDivisionIsFixed, Converter={StaticResource BoolToVisibilityConverter}}">
+                <StackPanel>
+                    <DockPanel LastChildFill="False" Margin="0,0,0,6">
+                        <TextBlock DockPanel.Dock="Left" Text="Match Pairings (Fixed Mode)"
+                                   Style="{StaticResource Hdr}" Margin="0"/>
+                        <Button DockPanel.Dock="Right" Content="🔄 Generate Pairings"
+                                Command="{Binding GeneratePairingsCommand}"
+                                Padding="10,4" Background="#1976D2" Foreground="White"/>
+                    </DockPanel>
+                    <TextBlock FontSize="11" Foreground="#666" TextWrapping="Wrap" Margin="0,0,0,6">
+                        Teams sorted alphabetically. Team 1 skips Team N, Team 2 skips Team N-1, etc., so each plays exactly MatchesPerTeam opponents.
+                    </TextBlock>
+                    <DataGrid ItemsSource="{Binding SelectedDivisionPairings}"
+                              AutoGenerateColumns="False" IsReadOnly="True"
+                              GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                              MaxHeight="180" CanUserResizeColumns="True" CanUserSortColumns="True">
+                        <DataGrid.ColumnHeaderStyle>
+                            <Style TargetType="DataGridColumnHeader">
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                <Setter Property="Padding" Value="6,4"/>
+                                <Setter Property="Cursor" Value="Hand"/>
+                                <Setter Property="ToolTip" Value="Click to sort · Shift+click for multi-column sort"/>
+                            </Style>
+                        </DataGrid.ColumnHeaderStyle>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="#"      Binding="{Binding Index}" Width="35"  SortMemberPath="Index"/>
+                            <DataGridTextColumn Header="Team A" Binding="{Binding TeamA}" Width="*"   SortMemberPath="TeamA"/>
+                            <DataGridTextColumn Header="Team B" Binding="{Binding TeamB}" Width="*"   SortMemberPath="TeamB"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </StackPanel>
             </Border>
+
+            <!-- spacer row -->
+            <Border Grid.Row="4"/>
         </Grid>
 
         <!-- ══ COL 4: Edit scheduling mode for selected division ════════════ -->

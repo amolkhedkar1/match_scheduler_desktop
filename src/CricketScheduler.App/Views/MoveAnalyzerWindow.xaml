@@ -1,0 +1,165 @@
+<Window x:Class="CricketScheduler.App.Views.MoveAnalyzerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:CricketScheduler.App"
+        Title="{Binding WindowTitle}"
+        Width="900" MinWidth="700" Height="620" MinHeight="460"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip"
+        ShowInTaskbar="False">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolVis"/>
+        <Style x:Key="ColHdr" TargetType="DataGridColumnHeader">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="Background" Value="#F0F0F0"/>
+            <Setter Property="BorderBrush" Value="#DDD"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- match banner -->
+            <RowDefinition Height="Auto"/>   <!-- section header: slots -->
+            <RowDefinition Height="2.2*"/>   <!-- upper grid: slot options -->
+            <RowDefinition Height="Auto"/>   <!-- section header: displaced -->
+            <RowDefinition Height="1.8*"/>   <!-- lower grid: displaced matches -->
+            <RowDefinition Height="Auto"/>   <!-- status bar -->
+            <RowDefinition Height="Auto"/>   <!-- buttons -->
+        </Grid.RowDefinitions>
+
+        <!-- ── MATCH BANNER ──────────────────────────────────────────────── -->
+        <Border Grid.Row="0" Background="#1565C0" CornerRadius="5" Padding="12,8" Margin="0,0,0,10">
+            <StackPanel>
+                <TextBlock Text="{Binding MatchTitle}" Foreground="White"
+                           FontSize="16" FontWeight="Bold"/>
+                <TextBlock Text="{Binding MatchDetail}" Foreground="#BBDEFB"
+                           FontSize="12" Margin="0,2,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ── SECTION: TARGET SLOTS ─────────────────────────────────────── -->
+        <Border Grid.Row="1" Background="#E8EAF6" CornerRadius="3" Padding="8,5" Margin="0,0,0,4">
+            <TextBlock FontWeight="SemiBold" Foreground="#283593">
+                📋  Step 1 — Select a target slot for this match
+                <Run Foreground="#666" FontWeight="Normal" FontSize="11">
+                    (green = free slot, no conflicts · click to see impact below)
+                </Run>
+            </TextBlock>
+        </Border>
+
+        <!-- Upper grid: all slot options -->
+        <DataGrid Grid.Row="2" x:Name="SlotGrid"
+                  ItemsSource="{Binding SlotOptions}"
+                  SelectedItem="{Binding SelectedSlot}"
+                  AutoGenerateColumns="False" IsReadOnly="True"
+                  GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                  CanUserResizeColumns="True" CanUserSortColumns="True"
+                  SelectionMode="Single" Margin="0,0,0,8"
+                  ColumnHeaderStyle="{StaticResource ColHdr}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Date"      Binding="{Binding DateDisplay}"                    Width="140"/>
+                <DataGridTextColumn Header="Time"      Binding="{Binding TimeRange}"                      Width="120"/>
+                <DataGridTextColumn Header="Ground"    Binding="{Binding GroundName}"                     Width="120"/>
+                <DataGridTextColumn Header="Affected"  Binding="{Binding AffectedCount}"                  Width="75"/>
+                <DataGridTextColumn Header="Fairness"  Binding="{Binding FairnessScore, StringFormat=F1}" Width="75"/>
+                <DataGridTextColumn Header="Status"    Binding="{Binding Summary}"                        Width="*"/>
+            </DataGrid.Columns>
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsRecommended}" Value="True">
+                            <Setter Property="Background" Value="#C8E6C9"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Setter Property="ToolTip" Value="✅ Free slot — no matches displaced"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding AffectedCount}" Value="0">
+                            <Setter Property="Background" Value="#E8F5E9"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
+        </DataGrid>
+
+        <!-- ── SECTION: DISPLACED MATCHES ───────────────────────────────── -->
+        <Border Grid.Row="3" Background="#FFF3E0" CornerRadius="3" Padding="8,5" Margin="0,0,0,4">
+            <TextBlock FontWeight="SemiBold" Foreground="#E65100">
+                ♟  Step 2 — Resolve displaced matches
+                <Run Foreground="#666" FontWeight="Normal" FontSize="11">
+                    (matches that must move if you pick the slot above · auto-resolved = ✅ · needs work = click Resolve)
+                </Run>
+            </TextBlock>
+        </Border>
+
+        <!-- Lower grid: displaced matches + auto-resolve destination -->
+        <DataGrid Grid.Row="4" x:Name="DisplacedGrid"
+                  ItemsSource="{Binding DisplacedMatches}"
+                  AutoGenerateColumns="False" IsReadOnly="True"
+                  GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                  CanUserResizeColumns="True" CanUserSortColumns="True"
+                  SelectionMode="Single" Margin="0,0,0,8"
+                  ColumnHeaderStyle="{StaticResource ColHdr}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Match"        Binding="{Binding MatchTitle}"    Width="230"/>
+                <DataGridTextColumn Header="Current Slot" Binding="{Binding CurrentSlot}"   Width="200"/>
+                <DataGridTextColumn Header="Resolution"   Binding="{Binding AutoResolveTo}" Width="*"/>
+                <!-- Resolve button — only shown when auto-resolve is not possible -->
+                <DataGridTemplateColumn Header="Action" Width="90">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="🔍 Resolve"
+                                    Visibility="{Binding CanAutoResolve,
+                                        Converter={x:Static local:InverseBoolToVisibilityConverter.Instance}}"
+                                    Command="{Binding DataContext.ResolveDisplacedCommand,
+                                        RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}"
+                                    Padding="6,3" FontSize="11"
+                                    Background="#E65100" Foreground="White"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding CanAutoResolve}" Value="True">
+                            <Setter Property="Background" Value="#E8F5E9"/>
+                            <Setter Property="ToolTip" Value="✅ Can be auto-resolved — will be moved when you commit"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding CanAutoResolve}" Value="False">
+                            <Setter Property="Background" Value="#FFF3E0"/>
+                            <Setter Property="ToolTip" Value="⚠ No free slot — click Resolve to open sub-analyzer"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
+        </DataGrid>
+
+        <!-- ── STATUS BAR ────────────────────────────────────────────────── -->
+        <Border Grid.Row="5" Background="#F5F5F5" CornerRadius="3"
+                Padding="10,6" Margin="0,0,0,10"
+                BorderBrush="#DDD" BorderThickness="1">
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap"
+                       FontSize="12" Foreground="#333"/>
+        </Border>
+
+        <!-- ── BUTTONS ────────────────────────────────────────────────────── -->
+        <DockPanel Grid.Row="6" LastChildFill="False">
+            <Button DockPanel.Dock="Left"
+                    Content="✔  Commit Move"
+                    Command="{Binding CommitMoveCommand}"
+                    IsEnabled="{Binding CanCommit}"
+                    Padding="16,8" FontWeight="SemiBold" FontSize="13"
+                    Background="#2E7D32" Foreground="White"/>
+            <TextBlock DockPanel.Dock="Left" Margin="12,0,0,0"
+                       VerticalAlignment="Center" FontSize="11" Foreground="#555"
+                       Text="Commit applies this move and all auto-resolutions simultaneously."/>
+            <Button DockPanel.Dock="Right"
+                    Content="✕  Cancel"
+                    Click="Cancel_Click"
+                    Padding="12,8" Background="#C62828" Foreground="White"/>
+        </DockPanel>
+    </Grid>
+</Window>

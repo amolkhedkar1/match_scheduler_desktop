@@ -1,9 +1,9 @@
-DivisionName,TeamName,IsRoundRobin,MatchesPerTeam
-DivisionA,Bezawada Bullets,True,
-DivisionA,KarimNagar Khatarnaks,True,
-DivisionA,Hyderabad Hitters,True,
-DivisionA,Vizag Warriors,True,
-DivisionB,Guntur Giants,True,
-DivisionB,Nellore Knights,True,
-DivisionB,Warangal Wolves,True,
-DivisionB,Telangana Titans,True,
+DivisionName,TeamName,IsRoundRobin,MatchesPerTeam,Pairings
+DivisionA,Bezawada Bullets,True,,
+DivisionA,KarimNagar Khatarnaks,True,,
+DivisionA,Hyderabad Hitters,True,,
+DivisionA,Vizag Warriors,True,,
+DivisionB,Guntur Giants,True,,
+DivisionB,Nellore Knights,True,,
+DivisionB,Warangal Wolves,True,,
+DivisionB,Telangana Titans,True,,
