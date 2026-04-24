@@ -9,7 +9,7 @@ public partial class App : Application
         this.DispatcherUnhandledException += (s, e) =>
         {
 
-            var text = e.Exception.ToString();
+            var text = e.Exception.ToString() + e.Exception.StackTrace;
             Clipboard.SetText(text); // optional: auto-copy
 
 

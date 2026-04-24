@@ -15,9 +15,10 @@ public sealed class DivisionStatTable
 
 public partial class StatisticsViewModel : ObservableObject
 {
-    [ObservableProperty] private List<DivisionStatTable> matchesByDivision  = [];
-    [ObservableProperty] private List<DivisionStatTable> umpiringByDivision = [];
-    [ObservableProperty] private List<DivisionStatTable> groundByDivision   = [];
+    [ObservableProperty] private List<DivisionStatTable> matchesByDivision        = [];
+    [ObservableProperty] private List<DivisionStatTable> umpiringByDivision       = [];
+    [ObservableProperty] private List<DivisionStatTable> groundByDivision         = [];
+    [ObservableProperty] private List<DivisionStatTable> matchesPerWeekPerGround  = [];
 
     public void RefreshStatistics(IEnumerable<Match> matches)
     {
@@ -46,13 +47,22 @@ public partial class StatisticsViewModel : ObservableObject
         MatchesByDivision  = matchesTables;
         UmpiringByDivision = umpiringTables;
         GroundByDivision   = groundTables;
+        MatchesPerWeekPerGround =
+        [
+            new DivisionStatTable
+            {
+                DivisionName = "All Divisions",
+                Table        = BuildMatchesPerWeekPerGroundTable(matchList)
+            }
+        ];
     }
 
     public void Clear()
     {
-        MatchesByDivision  = [];
-        UmpiringByDivision = [];
-        GroundByDivision   = [];
+        MatchesByDivision       = [];
+        UmpiringByDivision      = [];
+        GroundByDivision        = [];
+        MatchesPerWeekPerGround = [];
     }
 
     // ── CSV export ────────────────────────────────────────────────────────────
@@ -186,6 +196,62 @@ public partial class StatisticsViewModel : ObservableObject
         totRow["Total"] = grand.ToString();
         t.Rows.Add(totRow);
         return t;
+    }
+
+    // Matches per week per ground: rows = grounds, columns = week-start dates (Monday), values = match count.
+    private static DataTable BuildMatchesPerWeekPerGroundTable(List<Match> matches)
+    {
+        var scheduledWithGround = matches.Where(m => m.Date.HasValue && m.Ground != null).ToList();
+
+        var grounds = scheduledWithGround.Select(m => m.Ground!.Name).Distinct().OrderBy(g => g).ToList();
+        var weeks   = scheduledWithGround.Select(m => GetWeekStart(m.Date!.Value))
+                          .Distinct().OrderBy(w => w).ToList();
+
+        var t = new DataTable();
+        t.Columns.Add("Ground", typeof(string));
+        foreach (var week in weeks)
+            t.Columns.Add(week.ToString("MM/dd"), typeof(string));
+        t.Columns.Add("Total", typeof(string));
+
+        foreach (var ground in grounds)
+        {
+            var row   = t.NewRow();
+            row["Ground"] = ground;
+            int total = 0;
+            foreach (var week in weeks)
+            {
+                var weekEnd = week.AddDays(6);
+                int cnt = scheduledWithGround.Count(m =>
+                    m.Ground!.Name == ground &&
+                    m.Date!.Value >= week && m.Date!.Value <= weekEnd);
+                row[week.ToString("MM/dd")] = cnt > 0 ? cnt.ToString() : "·";
+                total += cnt;
+            }
+            row["Total"] = total.ToString();
+            t.Rows.Add(row);
+        }
+
+        var totRow = t.NewRow();
+        totRow["Ground"] = "Total";
+        int grand = 0;
+        foreach (var week in weeks)
+        {
+            var weekEnd = week.AddDays(6);
+            int cnt = scheduledWithGround.Count(m =>
+                m.Date!.Value >= week && m.Date!.Value <= weekEnd);
+            totRow[week.ToString("MM/dd")] = cnt.ToString();
+            grand += cnt;
+        }
+        totRow["Total"] = grand.ToString();
+        t.Rows.Add(totRow);
+
+        return t;
+    }
+
+    private static DateOnly GetWeekStart(DateOnly date)
+    {
+        int diff = ((int)date.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
+        return date.AddDays(-diff);
     }
 
     private static DataTable NewTable(List<string> midColumns)

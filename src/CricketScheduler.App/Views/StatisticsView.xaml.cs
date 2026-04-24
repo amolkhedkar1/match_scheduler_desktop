@@ -1,3 +1,4 @@
+using CricketScheduler.App.Services;
 using CricketScheduler.App.ViewModels;
 using System.ComponentModel;
 using System.Data;
@@ -11,15 +12,18 @@ namespace CricketScheduler.App.Views;
 public partial class StatisticsView : UserControl
 {
     private StatisticsViewModel? _vm;
+    private MainViewModel?       _mainVm;
 
     public StatisticsView()
     {
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
 
-        ExportAllMatchesBtn.Click  += (_, _) => ExportAll(_vm?.MatchesByDivision,  "matches");
-        ExportAllUmpiringBtn.Click += (_, _) => ExportAll(_vm?.UmpiringByDivision, "umpiring");
-        ExportAllGroundBtn.Click   += (_, _) => ExportAll(_vm?.GroundByDivision,   "ground");
+        ExportAllMatchesBtn.Click       += (_, _) => ExportAll(_vm?.MatchesByDivision,       "matches");
+        ExportAllUmpiringBtn.Click      += (_, _) => ExportAll(_vm?.UmpiringByDivision,      "umpiring");
+        ExportAllGroundBtn.Click        += (_, _) => ExportAll(_vm?.GroundByDivision,        "ground");
+        ExportAllWeeklyGroundBtn.Click  += (_, _) => ExportAll(_vm?.MatchesPerWeekPerGround, "weekly_ground");
+        ExportAllStatsExcelBtn.Click    += OnExportAllStatsExcel;
     }
 
     private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -29,7 +33,8 @@ public partial class StatisticsView : UserControl
 
         if (e.NewValue is MainViewModel mainVm)
         {
-            _vm = mainVm.StatisticsVM;
+            _mainVm = mainVm;
+            _vm     = mainVm.StatisticsVM;
             _vm.PropertyChanged += OnVmPropertyChanged;
             RefreshAll();
         }
@@ -40,20 +45,23 @@ public partial class StatisticsView : UserControl
         switch (e.PropertyName)
         {
             case nameof(StatisticsViewModel.MatchesByDivision):
-                BuildPanels(MatchesPanel,  _vm!.MatchesByDivision,  "matches");  break;
+                BuildPanels(MatchesPanel,      _vm!.MatchesByDivision,       "matches");       break;
             case nameof(StatisticsViewModel.UmpiringByDivision):
-                BuildPanels(UmpiringPanel, _vm!.UmpiringByDivision, "umpiring"); break;
+                BuildPanels(UmpiringPanel,     _vm!.UmpiringByDivision,      "umpiring");      break;
             case nameof(StatisticsViewModel.GroundByDivision):
-                BuildPanels(GroundPanel,   _vm!.GroundByDivision,   "ground");   break;
+                BuildPanels(GroundPanel,       _vm!.GroundByDivision,        "ground");        break;
+            case nameof(StatisticsViewModel.MatchesPerWeekPerGround):
+                BuildPanels(WeeklyGroundPanel, _vm!.MatchesPerWeekPerGround, "weekly_ground"); break;
         }
     }
 
     private void RefreshAll()
     {
         if (_vm is null) return;
-        BuildPanels(MatchesPanel,  _vm.MatchesByDivision,  "matches");
-        BuildPanels(UmpiringPanel, _vm.UmpiringByDivision, "umpiring");
-        BuildPanels(GroundPanel,   _vm.GroundByDivision,   "ground");
+        BuildPanels(MatchesPanel,      _vm.MatchesByDivision,       "matches");
+        BuildPanels(UmpiringPanel,     _vm.UmpiringByDivision,      "umpiring");
+        BuildPanels(GroundPanel,       _vm.GroundByDivision,        "ground");
+        BuildPanels(WeeklyGroundPanel, _vm.MatchesPerWeekPerGround, "weekly_ground");
     }
 
     // ── Build one panel (one DataGrid per division) ───────────────────────────
@@ -126,18 +134,18 @@ public partial class StatisticsView : UserControl
     {
         foreach (DataColumn col in table.Columns)
         {
-            var name   = col.ColumnName;
-            var isTeam = name == "Team";
-            var width  = isTeam ? 130 : name == "Total" ? 55 : 50;
+            var name        = col.ColumnName;
+            var isFirstCol  = name == "Team" || name == "Ground";
+            var width       = isFirstCol ? 150 : name == "Total" ? 55 : 50;
 
             var factory = new FrameworkElementFactory(typeof(TextBlock));
             factory.SetValue(TextBlock.ForegroundProperty, Brushes.Black);           // local value — beats everything
             factory.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-            if (!isTeam)
+            if (!isFirstCol)
                 factory.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center);
             factory.SetBinding(TextBlock.TextProperty, new Binding($"[{name}]"));
 
-            var headerStyle = isTeam        ? (Style)Resources["TeamHeaderStyle"]
+            var headerStyle = isFirstCol      ? (Style)Resources["TeamHeaderStyle"]
                             : name == "Total" ? (Style)Resources["TotalHeaderStyle"]
                             : null;
 
@@ -156,9 +164,15 @@ public partial class StatisticsView : UserControl
 
     private static void OnLoadingRow(object? sender, DataGridRowEventArgs e)
     {
-        if (e.Row.DataContext is DataRowView drv &&
-            drv.Row.Table.Columns.Contains("Team") &&
-            drv["Team"]?.ToString() == "Total")
+        string? label = null;
+        if (e.Row.DataContext is DataRowView drv)
+        {
+            var cols = drv.Row.Table.Columns;
+            if (cols.Contains("Team"))   label = drv["Team"]?.ToString();
+            else if (cols.Contains("Ground")) label = drv["Ground"]?.ToString();
+        }
+
+        if (label == "Total")
         {
             e.Row.FontWeight = FontWeights.Bold;
             e.Row.Background = new SolidColorBrush(Color.FromRgb(220, 220, 220));
@@ -171,6 +185,30 @@ public partial class StatisticsView : UserControl
     }
 
     // ── Export helpers ────────────────────────────────────────────────────────
+
+    private void OnExportAllStatsExcel(object sender, RoutedEventArgs e)
+    {
+        if (_vm is null || _mainVm is null) return;
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title            = "Export All Statistics",
+            Filter           = "Excel Workbook (*.xlsx)|*.xlsx",
+            FileName         = $"stats_all_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx",
+            InitialDirectory = AppPaths.ResolveOutputsRoot()
+        };
+
+        if (dlg.ShowDialog() != true) return;
+
+        var scheduled   = _mainVm.ScheduledMatches
+                              .Select(r => r.SourceMatch)
+                              .Where(m => m is not null)
+                              .Select(m => m!);
+        var unscheduled = _mainVm.UnscheduledMatches.Select(r => r.Match);
+
+        ExportService.ExportAllStatisticsToExcel(_vm, scheduled, unscheduled, dlg.FileName);
+        MessageBox.Show($"Exported to:\n{dlg.FileName}", "Export Complete");
+    }
 
     private static void ExportOne(DivisionStatTable div, string prefix)
     {

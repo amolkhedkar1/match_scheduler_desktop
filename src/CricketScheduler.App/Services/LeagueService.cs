@@ -104,7 +104,9 @@ public sealed class LeagueService
             TeamOne        = m.TeamOne,
             TeamTwo        = m.TeamTwo,
             Date           = DateOnly.TryParseExact(m.Date, "MM/dd/yyyy", out var d) ? d : null,
-            Slot           = TimeOnly.TryParse(m.Time, out var startTime) ? new TimeSlot { Start = startTime, End = startTime.AddHours(2) } : null,
+            Slot           = TimeOnly.TryParse(m.Time, out var startTime)
+                               ? tournament.TimeSlots.FirstOrDefault(s => s.Start == startTime)
+                               : null,
             Ground         = string.IsNullOrWhiteSpace(m.Ground)       ? null : new Ground { Name = m.Ground },
             UmpireOne      = m.UmpireOne,
             UmpireTwo      = m.UmpireTwo,

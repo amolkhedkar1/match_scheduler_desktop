@@ -5,8 +5,51 @@ namespace CricketScheduler.App.Services;
 
 public sealed partial class SchedulingService
 {
+    /// <summary>
+    /// Full scheduling pipeline:
+    ///   Phase 1  — generate match pairs from division config
+    ///   Phase 2  — build filtered slot universe: (date × ground × timeslot)
+    ///              N grounds → N identifiable slots per timeslot per date
+    ///   Phase 3  — assign date + ground + timeslot (backtracking, minimise unscheduled)
+    ///   Phase 5  — rebalance ground assignments for fairness (date+time kept fixed)
+    ///   Phase 6  — assign umpires
+    /// </summary>
     public SchedulingResult Generate(League league, List<Match> fixedMatches, List<ForbiddenSlot> forbidden)
-        => RunOptimisedSchedule(league, fixedMatches, forbidden);
+    {
+        // ── Phase 1: match pair generation ────────────────────────────────────────────────
+        var matchesToSchedule = MatchGenerator.GenerateMatches(league)
+            .Where(m => !fixedMatches.Any(f =>
+                string.Equals(f.TeamOne,      m.TeamOne,      StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(f.TeamTwo,      m.TeamTwo,      StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(f.DivisionName, m.DivisionName, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        // ── Phase 2: build slot universe (ground-aware) ───────────────────────────────────
+        // N grounds × M timeslots × D dates = N×M×D distinct identifiable slots.
+        // Globally forbidden slots (no division, no ground qualifier) are pre-filtered here;
+        // division- and ground-specific forbidden slots are enforced per match in Phase 3.
+        var slots = SchedulingMatrixBuilder.BuildSlots(league.Tournament)
+            .Where(s => !IsForbidden(s, forbidden))
+            .ToList();
+
+        // ── Phase 3: assign date + ground + timeslot via backtracking ─────────────────────
+        var result = ScheduleMatchesToSlots(matchesToSchedule, slots, fixedMatches, league, forbidden);
+        league.Matches            = result.ScheduledMatches.ToList();
+        league.UnscheduledMatches = result.UnscheduledMatches.Select(x => x.Match).ToList();
+
+        // ── Phase 5: rebalance ground assignments for fairness ────────────────────────────
+        // Date and timeslot are kept fixed; only the ground assignment is changed.
+        AssignGrounds(league, forbidden);
+
+        // ── Phase 6: assign umpires (non-fixed only) ──────────────────────────────────────
+        var toUmpire = league.Matches.Where(m => !m.IsFixed).ToList();
+        AssignUmpires(toUmpire, league.Divisions, allMatches: league.Matches);
+
+        for (var i = 0; i < league.Matches.Count; i++) league.Matches[i].Sequence = i + 1;
+        return new SchedulingResult(league.Matches, league.UnscheduledMatches
+            .Select(m => (m, m.UnscheduledReason ?? "Unscheduled"))
+            .ToList());
+    }
 
 
     /// <summary>
@@ -20,7 +63,7 @@ public sealed partial class SchedulingService
             if (f.Division is not null) continue; // division-specific handled per-match
             bool dateMatch   = f.Date      is null || f.Date == slot.Date;
             bool groundMatch = f.GroundName is null || string.Equals(f.GroundName, slot.Ground.Name, StringComparison.OrdinalIgnoreCase);
-            bool slotMatch   = f.TimeSlot  is null || (f.TimeSlot.Start == slot.TimeSlot.Start && f.TimeSlot.End == slot.TimeSlot.End);
+            bool slotMatch   = f.TimeSlot  is null || f.TimeSlot.Start == slot.TimeSlot.Start;
             if (dateMatch && groundMatch && slotMatch) return true;
         }
         return false;
@@ -38,7 +81,7 @@ public sealed partial class SchedulingService
             if (!divisionMatch) continue;
             bool dateMatch   = f.Date      is null || f.Date == slot.Date;
             bool groundMatch = f.GroundName is null || string.Equals(f.GroundName, slot.Ground.Name, StringComparison.OrdinalIgnoreCase);
-            bool slotMatch   = f.TimeSlot  is null || (f.TimeSlot.Start == slot.TimeSlot.Start && f.TimeSlot.End == slot.TimeSlot.End);
+            bool slotMatch   = f.TimeSlot  is null || f.TimeSlot.Start == slot.TimeSlot.Start;
             if (dateMatch && groundMatch && slotMatch) return true;
         }
         return false;
@@ -115,6 +158,18 @@ public sealed partial class SchedulingService
                         (ConstraintEvaluator.TeamMatch(match.TeamOne, m) ||
                          ConstraintEvaluator.TeamMatch(match.TeamTwo, m)))
                     .ToList();
+
+            // Hard filter: never suggest a slot where a FIXED match already occupies this team's weekend
+            // (fixed matches cannot be moved, so it would be an unresolvable constraint violation)
+            if (fixedMatches.Any(m =>
+                ConstraintEvaluator.IsWeekendEqual(m.Date, slot.Date) &&
+                (ConstraintEvaluator.TeamMatch(match.TeamOne, m) ||
+                 ConstraintEvaluator.TeamMatch(match.TeamTwo, m))))
+                continue;
+
+            // Strict mode (additionalFixed provided = displaced-match context): also filter
+            // non-fixed same-weekend conflicts so only constraint-clean slots are suggested
+            if (additionalFixed is not null && sameWeekendConflicts.Count > 0) continue;
 
             var allAffected = displacedAtSlot.Concat(sameWeekendConflicts).ToList();
             var contextAfterAllDisplaced = contextWithoutSlotOccupants.Except(sameWeekendConflicts).ToList();
@@ -203,17 +258,31 @@ public sealed partial class SchedulingService
         List<Match>? bestScheduled = null;
         List<(Match Match, string Reason)>? bestUnscheduled = null;
 
+        // Snapshot: each ordering mutates the same Match objects in-place.
+        // We capture Date/Slot/Ground when a better result is found so we can
+        // restore them after later (worse) orderings overwrite those fields.
+        var bestSnapshot = new Dictionary<Match, (DateOnly? Date, TimeSlot? Slot, Ground? Ground)>(
+            ReferenceEqualityComparer.Instance);
+
         foreach (var ordering in orderings)
         {
             var (sched, unsched) = TryScheduleOrdering(ordering.ToList(), allSlots, fixedMatches, league, forbidden);
             if (bestScheduled is null || sched.Count > bestScheduled.Count)
             {
-                bestScheduled  = sched;
+                bestScheduled   = sched;
                 bestUnscheduled = unsched;
+                bestSnapshot.Clear();
+                foreach (var m in sched)
+                    bestSnapshot[m] = (m.Date, m.Slot, m.Ground);
             }
             // Perfect solution — stop early
             if (bestUnscheduled!.Count == 0) break;
         }
+
+        // Restore match fields to the best-ordering values; subsequent orderings may have
+        // overwritten them on the shared Match objects.
+        foreach (var (m, (date, slot, ground)) in bestSnapshot)
+        { m.Date = date; m.Slot = slot; m.Ground = ground; }
 
         // Backtrack pass: for each unscheduled match, try displacing a non-fixed
         // already-scheduled match to free up a slot
@@ -355,93 +424,134 @@ public sealed partial class SchedulingService
     }
 
     /// <summary>
-    /// Reshuffles ground assignments for all non-fixed matches to balance ground usage
-    /// across teams, then re-runs umpiring assignment.
+    /// Reshuffles date/slot/ground assignments for all non-fixed matches to balance ground
+    /// usage across teams, then re-runs umpiring assignment.
     ///
     /// Hard guarantees:
-    ///   • Fixed matches are completely untouched (ground, umpires, date, slot all preserved).
+    ///   • Fixed matches are completely untouched.
     ///   • No two matches share the same ground + date + timeslot after redistribution.
-    ///   • Date and timeslot of every match remain unchanged.
+    ///   • Team availability constraints (date blocks, time-slot restrictions) are respected.
+    ///   • 1-match-per-team-per-weekend rule is preserved.
     ///
-    /// Ground-fairness algorithm (greedy, per date+slot group):
-    ///   1. For each (date, timeslot) group of non-fixed matches, collect the tournament
-    ///      grounds not already locked by fixed matches in that exact slot.
-    ///   2. Assign grounds to the group's matches one at a time, always picking the ground
-    ///      that minimises the combined ground-usage count for the two playing teams, so
-    ///      underused grounds are preferred.
-    ///   3. Each ground is consumed once per group (no double-booking within a slot).
+    /// Ground-fairness algorithm (tree-like, most-constrained first):
+    ///   1. Process non-fixed matches in order of fewest valid candidate slots (most constrained
+    ///      first) so unconstrained matches fill the gaps left by constrained ones.
+    ///   2. For each match: temporarily remove it from the assignment pool, then find the
+    ///      (date, timeslot, ground) combination in the same weekend with the lowest combined
+    ///      ground-usage count for its two teams. A small day-change penalty (5) discourages
+    ///      moving across Sat/Sun unless it gives a meaningfully better ground balance.
+    ///   3. Re-add the match at its best slot and repeat for the next match.
     /// </summary>
-    public void RescheduleGroundAndUmpiring(League league)
+    public void RescheduleGroundAndUmpiring(League league, List<ForbiddenSlot>? forbidden = null)
     {
+        // Phase 5 (full rebalance) + Phase 6
+        AssignGrounds(league, forbidden);
+        RescheduleUmpiring(league);
+    }
+
+    // ── Legacy ground+umpiring implementation kept for reference ─────────────────────────
+    [Obsolete("Replaced by AssignGrounds + RescheduleUmpiring pipeline. Kept for reference only.")]
+    private void LegacyRescheduleGroundAndUmpiring(League league, List<ForbiddenSlot>? forbidden = null)
+    {
+        forbidden ??= [];
+        var allTournamentSlots = SchedulingMatrixBuilder.BuildSlots(league.Tournament).ToList();
         var fixedMatches = league.Matches.Where(m => m.IsFixed).ToList();
         var nonFixed = league.Matches
             .Where(m => !m.IsFixed && m.Date is not null && m.Slot is not null)
             .ToList();
 
-        // Track combined ground-usage (team, ground) → count, seeded from fixed matches.
-        var groundUsage = new Dictionary<(string Team, string Ground), int>(
+        // occupied: "date|HH:mm|groundname" → Match — only fixed slots are pre-locked
+        static string SlotKey(DateOnly d, TimeOnly t, string g) => $"{d}|{t:HH\\:mm}|{g}";
+        var occupied = new Dictionary<string, Match>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in fixedMatches.Where(m => m.Ground is not null))
+            occupied[SlotKey(m.Date!.Value, m.Slot!.Start, m.Ground!.Name)] = m;
+
+        // groundUsage: (team, ground) → play count, seeded from fixed matches
+        var groundUsage = new Dictionary<(string, string), int>(
             EqualityComparer<(string, string)>.Create(
                 (a, b) => StringComparer.OrdinalIgnoreCase.Equals(a.Item1, b.Item1) &&
                            StringComparer.OrdinalIgnoreCase.Equals(a.Item2, b.Item2),
                 o => StringComparer.OrdinalIgnoreCase.GetHashCode(o.Item1) ^
                      StringComparer.OrdinalIgnoreCase.GetHashCode(o.Item2)));
 
-        void Inc(string team, string ground)
-        {
-            var key = (team, ground);
-            groundUsage[key] = groundUsage.GetValueOrDefault(key, 0) + 1;
-        }
+        int  GetUsage(string t, string g) => groundUsage.GetValueOrDefault((t, g), 0);
+        void IncUsage(string t, string g) { var k = (t, g); groundUsage[k] = groundUsage.GetValueOrDefault(k, 0) + 1; }
+        void DecUsage(string t, string g) { var k = (t, g); groundUsage[k] = Math.Max(0, groundUsage.GetValueOrDefault(k, 0) - 1); }
 
         foreach (var m in fixedMatches.Where(m => m.Ground is not null))
+        { IncUsage(m.TeamOne, m.Ground!.Name); IncUsage(m.TeamTwo, m.Ground!.Name); }
+
+        // Count valid candidate slots per match to determine processing order
+        int CandidateCount(Match m)
         {
-            Inc(m.TeamOne, m.Ground!.Name);
-            Inc(m.TeamTwo, m.Ground!.Name);
+            var wk = ConstraintEvaluator.WeekendKey(m.Date!.Value);
+            return allTournamentSlots.Count(s =>
+                ConstraintEvaluator.WeekendKey(s.Date) == wk &&
+                !IsForbiddenForMatch(s, m.DivisionName, forbidden) &&
+                !ConstraintEvaluator.IsFullDayBlocked(m.TeamOne,  s.Date, league.Constraints) &&
+                !ConstraintEvaluator.IsFullDayBlocked(m.TeamTwo,  s.Date, league.Constraints) &&
+                !ConstraintEvaluator.IsTimeSlotBlocked(m.TeamOne, s, league.Constraints) &&
+                !ConstraintEvaluator.IsTimeSlotBlocked(m.TeamTwo, s, league.Constraints));
         }
 
-        var allGrounds = league.Tournament.Grounds;
-
-        // Process each (date, timeslot) group so no ground is double-booked within a slot.
-        var groups = nonFixed
-            .GroupBy(m => (m.Date!.Value, m.Slot!.Start))
-            .OrderBy(g => g.Key.Value).ThenBy(g => g.Key.Start);
-
-        foreach (var group in groups)
+        foreach (var match in nonFixed.OrderBy(CandidateCount))
         {
-            var (date, slotStart) = group.Key;
-
-            // Grounds locked by fixed matches at this exact date+slot.
-            var fixedGroundsHere = fixedMatches
-                .Where(m => m.Date == date && m.Slot?.Start == slotStart && m.Ground is not null)
-                .Select(m => m.Ground!.Name)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            // Available grounds for redistribution (tournament grounds minus fixed-locked ones).
-            var available = allGrounds
-                .Where(g => !fixedGroundsHere.Contains(g.Name))
-                .ToList();
-
-            var usedThisGroup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var match in group)
+            var origKey = match.Ground is not null
+                ? SlotKey(match.Date!.Value, match.Slot!.Start, match.Ground.Name) : null;
+            if (origKey is not null)
             {
-                // Pick the ground that minimises combined prior usage for this team pair.
-                var bestGround = available
-                    .Where(g => !usedThisGroup.Contains(g.Name))
-                    .OrderBy(g =>
-                        groundUsage.GetValueOrDefault((match.TeamOne, g.Name), 0) +
-                        groundUsage.GetValueOrDefault((match.TeamTwo, g.Name), 0))
-                    .FirstOrDefault();
-
-                if (bestGround is null) continue; // more matches in slot than grounds — leave as-is
-
-                match.Ground = bestGround;
-                usedThisGroup.Add(bestGround.Name);
-                Inc(match.TeamOne, bestGround.Name);
-                Inc(match.TeamTwo, bestGround.Name);
+                occupied.Remove(origKey);
+                DecUsage(match.TeamOne, match.Ground!.Name);
+                DecUsage(match.TeamTwo, match.Ground!.Name);
             }
+
+            var weekendKey = ConstraintEvaluator.WeekendKey(match.Date!.Value);
+            (SchedulableSlot Slot, double Score)? best = null;
+
+            foreach (var slot in allTournamentSlots)
+            {
+                if (ConstraintEvaluator.WeekendKey(slot.Date) != weekendKey) continue;
+                if (occupied.ContainsKey(SlotKey(slot.Date, slot.TimeSlot.Start, slot.Ground.Name))) continue;
+                if (IsForbiddenForMatch(slot, match.DivisionName, forbidden)) continue;
+                if (ConstraintEvaluator.IsFullDayBlocked(match.TeamOne,  slot.Date, league.Constraints)) continue;
+                if (ConstraintEvaluator.IsFullDayBlocked(match.TeamTwo,  slot.Date, league.Constraints)) continue;
+                if (ConstraintEvaluator.IsTimeSlotBlocked(match.TeamOne, slot, league.Constraints)) continue;
+                if (ConstraintEvaluator.IsTimeSlotBlocked(match.TeamTwo, slot, league.Constraints)) continue;
+
+                // 1-per-weekend: no committed match has the same team on the same weekend
+                if (occupied.Values.Any(om =>
+                    ConstraintEvaluator.IsWeekendEqual(om.Date, slot.Date) &&
+                    (ConstraintEvaluator.TeamMatch(match.TeamOne, om) ||
+                     ConstraintEvaluator.TeamMatch(match.TeamTwo, om)))) continue;
+
+                double score = GetUsage(match.TeamOne, slot.Ground.Name)
+                             + GetUsage(match.TeamTwo, slot.Ground.Name)
+                             + (slot.Date != match.Date!.Value ? 5.0 : 0.0);
+
+                if (best is null || score < best.Value.Score)
+                    best = (slot, score);
+            }
+
+            if (best is null)
+            {
+                if (origKey is not null)
+                {
+                    occupied[origKey] = match;
+                    IncUsage(match.TeamOne, match.Ground!.Name);
+                    IncUsage(match.TeamTwo, match.Ground!.Name);
+                }
+                continue;
+            }
+
+            match.Date  = best.Value.Slot.Date;
+            match.Slot  = best.Value.Slot.TimeSlot;
+            match.Ground = best.Value.Slot.Ground;
+            var newKey = SlotKey(match.Date!.Value, match.Slot!.Start, match.Ground!.Name);
+            occupied[newKey] = match;
+            IncUsage(match.TeamOne, match.Ground.Name);
+            IncUsage(match.TeamTwo, match.Ground.Name);
         }
 
-        // Re-run umpiring with updated ground assignments.
         RescheduleUmpiring(league);
     }
 
@@ -449,15 +559,22 @@ public sealed partial class SchedulingService
     /// Assigns umpiring teams to each match in <paramref name="matchesToUmpire"/> using:
     /// Priority 1 — team with a match in an ADJACENT slot on the same date + ground
     ///              (physically at the ground already)
-    /// Priority 2 — team with NO match in the same calendar week (ISO week)
-    ///              (least travel burden)
+    /// Priority 2 — team with NO match on the same WEEKEND
+    ///              (least travel burden; weekend = Sat+Sun pair)
     /// Priority 3 — any eligible team (lowest cumulative umpire load — fairness fallback)
     ///
     /// Hard rules (always enforced):
     ///   • A team NEVER umpires in its own division.
     ///   • A team NEVER umpires when it is playing (same date + slot, any ground).
-    ///   • A team NEVER umpires at a ground where it is NOT playing on that day
-    ///     (teams playing at a different ground that day are excluded).
+    ///   • A team NEVER umpires at a ground where it is NOT playing on that day.
+    ///   • A team NEVER exceeds ceil(matchesPlaying / 2) total umpiring assignments.
+    ///   • A team NEVER umpires more than once per weekend.
+    ///
+    /// Soft rule:
+    ///   • Deprioritize teams that umpired within the last 7 days (prefer 1-week gap).
+    ///
+    /// Fixed-match umpire assignments are pre-seeded into tracking so they count
+    /// toward the per-team load cap and per-weekend limits.
     /// </summary>
     private static void AssignUmpires(
         List<Match> matchesToUmpire,
@@ -466,9 +583,42 @@ public sealed partial class SchedulingService
     {
         allMatches ??= matchesToUmpire;
 
-        var umpireLoad = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // Compute how many matches each team is playing (for the 50%-cap hard rule)
+        var matchesPlaying = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var t in divisions.SelectMany(d => d.Teams))
-            umpireLoad[t.Name] = 0;
+            matchesPlaying[t.Name] = 0;
+        foreach (var m in allMatches)
+        {
+            matchesPlaying[m.TeamOne] = matchesPlaying.GetValueOrDefault(m.TeamOne, 0) + 1;
+            matchesPlaying[m.TeamTwo] = matchesPlaying.GetValueOrDefault(m.TeamTwo, 0) + 1;
+        }
+
+        // HARD: max umpire load = ceil(matchesPlaying / 2)
+        var maxUmpireLoad = matchesPlaying.ToDictionary(
+            kv => kv.Key,
+            kv => (int)Math.Ceiling(kv.Value / 2.0),
+            StringComparer.OrdinalIgnoreCase);
+
+        var umpireLoad     = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var umpireWeekends = new Dictionary<string, HashSet<DateTime>>(StringComparer.OrdinalIgnoreCase);
+        var lastUmpireDate = new Dictionary<string, DateOnly>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var t in divisions.SelectMany(d => d.Teams))
+        {
+            umpireLoad[t.Name]     = 0;
+            umpireWeekends[t.Name] = [];
+        }
+
+        // Pre-seed from fixed matches so their umpire assignments count toward limits
+        foreach (var m in allMatches.Where(m => m.IsFixed && m.Date is not null && m.UmpireOne is not null)
+                                     .OrderBy(m => m.Date))
+        {
+            var u = m.UmpireOne!;
+            if (!umpireLoad.ContainsKey(u)) continue;
+            umpireLoad[u]++;
+            umpireWeekends[u].Add(ConstraintEvaluator.WeekendKey(m.Date!.Value));
+            lastUmpireDate[u] = m.Date!.Value;
+        }
 
         var ordered = matchesToUmpire
             .Where(m => m.Date is not null && m.Slot is not null)
@@ -480,9 +630,6 @@ public sealed partial class SchedulingService
             .GroupBy(m => m.Date!.Value)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        static int IsoWeek(DateOnly d) =>
-            System.Globalization.ISOWeek.GetWeekOfYear(d.ToDateTime(TimeOnly.MinValue));
-
         foreach (var match in ordered)
         {
             // Hard rule 1: never umpire own division
@@ -491,32 +638,35 @@ public sealed partial class SchedulingService
                 .SelectMany(d => d.Teams.Select(t => t.Name))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-
             if (eligible.Count == 0) continue;
 
             byDate.TryGetValue(match.Date!.Value, out var dayMatches);
             dayMatches ??= [];
 
-            // Hard rules 2+3: team cannot umpire while playing in the same slot (any ground)
+            // Hard rule 2: cannot umpire while playing in same slot (any ground)
             var playingNow = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var m in dayMatches.Where(m => m.Slot?.Start == match.Slot!.Start))
-            {
-                playingNow.Add(m.TeamOne);
-                playingNow.Add(m.TeamTwo);
-            }
+            { playingNow.Add(m.TeamOne); playingNow.Add(m.TeamTwo); }
             eligible = eligible.Where(t => !playingNow.Contains(t)).ToList();
             if (eligible.Count == 0) continue;
 
-            // Hard rule 4: team cannot umpire at a ground where it is not playing that day.
-            // Teams playing at a DIFFERENT ground today are excluded (even in a different slot).
+            // Hard rule 3: cannot umpire at a ground where NOT playing that day
             var playingAtDifferentGround = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var m in dayMatches.Where(m =>
                 !string.Equals(m.Ground?.Name, match.Ground?.Name, StringComparison.OrdinalIgnoreCase)))
-            {
-                playingAtDifferentGround.Add(m.TeamOne);
-                playingAtDifferentGround.Add(m.TeamTwo);
-            }
+            { playingAtDifferentGround.Add(m.TeamOne); playingAtDifferentGround.Add(m.TeamTwo); }
             eligible = eligible.Where(t => !playingAtDifferentGround.Contains(t)).ToList();
+            if (eligible.Count == 0) continue;
+
+            // Hard rule 4 (new): cannot exceed ceil(matchesPlaying/2) total umpiring load
+            eligible = eligible.Where(t =>
+                umpireLoad.GetValueOrDefault(t, 0) < maxUmpireLoad.GetValueOrDefault(t, int.MaxValue)).ToList();
+            if (eligible.Count == 0) continue;
+
+            // Hard rule 5 (new): at most 1 umpiring assignment per weekend
+            var matchWeekend = ConstraintEvaluator.WeekendKey(match.Date!.Value);
+            eligible = eligible.Where(t =>
+                !umpireWeekends.TryGetValue(t, out var wu) || !wu.Contains(matchWeekend)).ToList();
             if (eligible.Count == 0) continue;
 
             // Priority 1: adjacent slot (prev/next) on same date + same ground
@@ -526,26 +676,28 @@ public sealed partial class SchedulingService
                 && m.Slot is not null && m != match))
             {
                 if (m.Slot!.End == match.Slot!.Start || m.Slot.Start == match.Slot.End)
-                {
-                    adjacentTeams.Add(m.TeamOne);
-                    adjacentTeams.Add(m.TeamTwo);
-                }
+                { adjacentTeams.Add(m.TeamOne); adjacentTeams.Add(m.TeamTwo); }
             }
 
-            // Priority 2: team with no match in the same ISO calendar week
-            int matchWeek = IsoWeek(match.Date!.Value);
-            var teamsWithMatchThisWeek = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var m in allMatches.Where(m => m.Date is not null && IsoWeek(m.Date!.Value) == matchWeek))
-            {
-                teamsWithMatchThisWeek.Add(m.TeamOne);
-                teamsWithMatchThisWeek.Add(m.TeamTwo);
-            }
+            // Priority 2: teams NOT playing this weekend (Sat+Sun pair, not ISO calendar week)
+            var teamsPlayingThisWeekend = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in allMatches.Where(m =>
+                m.Date is not null && ConstraintEvaluator.IsWeekendEqual(m.Date, match.Date!.Value)))
+            { teamsPlayingThisWeekend.Add(m.TeamOne); teamsPlayingThisWeekend.Add(m.TeamTwo); }
+
+            // Soft: deprioritize teams that umpired within the last 7 days
+            bool RecentlyUmpired(string t) =>
+                lastUmpireDate.TryGetValue(t, out var last) &&
+                (match.Date!.Value.ToDateTime(TimeOnly.MinValue) - last.ToDateTime(TimeOnly.MinValue)).TotalDays < 7;
 
             var p1 = eligible.Where(t => adjacentTeams.Contains(t))
-                              .OrderBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
-            var p2 = eligible.Where(t => !teamsWithMatchThisWeek.Contains(t))
-                              .OrderBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
-            var p3 = eligible.OrderBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
+                              .OrderBy(t => RecentlyUmpired(t) ? 1 : 0)
+                              .ThenBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
+            var p2 = eligible.Where(t => !teamsPlayingThisWeekend.Contains(t))
+                              .OrderBy(t => RecentlyUmpired(t) ? 1 : 0)
+                              .ThenBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
+            var p3 = eligible.OrderBy(t => RecentlyUmpired(t) ? 1 : 0)
+                              .ThenBy(t => umpireLoad.GetValueOrDefault(t, 0)).ToList();
 
             string bestTeam;
             if      (p1.Count > 0) bestTeam = p1.First();
@@ -556,6 +708,9 @@ public sealed partial class SchedulingService
             match.UmpireOne = bestTeam;
             match.UmpireTwo = bestTeam;
             umpireLoad[bestTeam] = umpireLoad.GetValueOrDefault(bestTeam, 0) + 1;
+            if (!umpireWeekends.ContainsKey(bestTeam)) umpireWeekends[bestTeam] = [];
+            umpireWeekends[bestTeam].Add(matchWeekend);
+            lastUmpireDate[bestTeam] = match.Date!.Value;
         }
     }
 }
@@ -667,6 +822,9 @@ internal static class MatchGenerator
 
 internal sealed record SchedulableSlot(DateOnly Date, Ground Ground, TimeSlot TimeSlot);
 
+/// <summary>Date + time-slot pair used in Phase 3 (date/time assignment). Ground is not yet known.</summary>
+internal sealed record DateTimeSlot(DateOnly Date, TimeSlot TimeSlot);
+
 internal static class SchedulingMatrixBuilder
 {
     public static List<SchedulableSlot> BuildSlots(Tournament tournament)
@@ -695,6 +853,26 @@ internal static class SchedulingMatrixBuilder
         }
 
         return slots;
+    }
+
+    /// <summary>
+    /// Builds the universe of (date, timeslot) pairs for Phase 3 scheduling.
+    /// Ground is not included — each entry represents a block of time, not a specific pitch.
+    /// Discarded dates are already excluded; forbidden-slot filtering is done by the caller.
+    /// </summary>
+    public static List<DateTimeSlot> BuildDateTimeSlots(Tournament tournament)
+    {
+        var seen   = new HashSet<(DateOnly, TimeOnly)>();
+        var result = new List<DateTimeSlot>();
+        for (var date = tournament.StartDate; date <= tournament.EndDate; date = date.AddDays(1))
+        {
+            if (date.DayOfWeek is not DayOfWeek.Saturday and not DayOfWeek.Sunday) continue;
+            if (tournament.DiscardedDates.Contains(date)) continue;
+            foreach (var slot in tournament.TimeSlots)
+                if (seen.Add((date, slot.Start)))
+                    result.Add(new DateTimeSlot(date, slot));
+        }
+        return result;
     }
 }
 
@@ -730,9 +908,8 @@ internal static class ConstraintEvaluator
         reason = string.Empty;
         var sameTimeExisting = scheduled.FirstOrDefault(m =>
             m.Date == slot.Date &&
-            m.Ground?.Name == slot.Ground.Name &&
-            m.Slot?.Start == slot.TimeSlot.Start &&
-            m.Slot?.End == slot.TimeSlot.End);
+            string.Equals(m.Ground?.Name, slot.Ground.Name, StringComparison.OrdinalIgnoreCase) &&
+            m.Slot?.Start == slot.TimeSlot.Start);
         if (sameTimeExisting is not null)
         {
             reason = "Ground/time already used.";
@@ -862,9 +1039,9 @@ internal static class ConstraintEvaluator
         {
             var slotCounts = scheduled
                 .Where(m => m.Slot is not null)
-                .GroupBy(m => $"{m.Slot!.Start:HH\\:mm}-{m.Slot!.End:HH\\:mm}")
+                .GroupBy(m => $"{m.Slot!.Start:HH\\:mm}")
                 .ToDictionary(g => g.Key, g => g.Count());
-            var thisSlotKey  = $"{slot.TimeSlot.Start:HH\\:mm}-{slot.TimeSlot.End:HH\\:mm}";
+            var thisSlotKey   = $"{slot.TimeSlot.Start:HH\\:mm}";
             var thisSlotCount = slotCounts.GetValueOrDefault(thisSlotKey, 0);
             var avgSlotCount  = slotCounts.Values.DefaultIfEmpty(0).Average();
             if (thisSlotCount > avgSlotCount * 2.0)
@@ -922,7 +1099,15 @@ internal static class ConstraintEvaluator
         return false;
     }
 
+    // Canonical overload — SchedulableSlot delegates to DateOnly variant.
     internal static bool ViolatesNoGapRule(Match pending, SchedulableSlot candidate, List<Match> scheduled)
+        => ViolatesNoGapRule(pending, candidate.Date, scheduled);
+
+    /// <summary>
+    /// Returns true if adding a match on <paramref name="candidateDate"/> would create a gap of
+    /// more than 2 consecutive no-match weekends for either team.
+    /// </summary>
+    internal static bool ViolatesNoGapRule(Match pending, DateOnly candidateDate, List<Match> scheduled)
     {
         var teams = new[] { pending.TeamOne, pending.TeamTwo };
         foreach (var team in teams)
@@ -930,31 +1115,69 @@ internal static class ConstraintEvaluator
             var existingWeekends = scheduled
                 .Where(m => TeamMatch(team, m) && m.Date is not null)
                 .Select(m => WeekendKey(m.Date!.Value))
-                .Distinct()
-                .OrderBy(d => d)
-                .ToList();
+                .Distinct().OrderBy(d => d).ToList();
 
-            var withCandidate = existingWeekends.Append(WeekendKey(candidate.Date)).Distinct().OrderBy(d => d).ToList();
-            if (withCandidate.Count < 2)
-            {
-                continue;
-            }
+            var withCandidate = existingWeekends
+                .Append(WeekendKey(candidateDate))
+                .Distinct().OrderBy(d => d).ToList();
+
+            if (withCandidate.Count < 2) continue;
 
             var maxGap = 0;
             for (var i = 1; i < withCandidate.Count; i++)
             {
-                var weekendDiff = (int)((withCandidate[i] - withCandidate[i - 1]).TotalDays / 7) - 1;
-                maxGap = Math.Max(maxGap, weekendDiff);
+                var diff = (int)((withCandidate[i] - withCandidate[i - 1]).TotalDays / 7) - 1;
+                maxGap = Math.Max(maxGap, diff);
             }
-
-            if (maxGap > 2)
-            {
-                return true;
-            }
+            if (maxGap > 2) return true;
         }
-
         return false;
     }
+
+    /// <summary>
+    /// Checks whether a (date, timeslot) slot is valid for scheduling a match.
+    /// Used in Phase 3 where grounds are not yet assigned.
+    /// <paramref name="groundCapacity"/> = number of grounds available (slot capacity limit).
+    /// </summary>
+    public static bool IsDateTimeSlotAllowed(
+        Match match, DateTimeSlot slot, League league,
+        List<Match> scheduled, int groundCapacity, out string reason)
+    {
+        reason = string.Empty;
+
+        // Capacity: at most groundCapacity matches may share this (date, timeslot)
+        int used = scheduled.Count(m => m.Date == slot.Date && m.Slot?.Start == slot.TimeSlot.Start);
+        if (used >= groundCapacity)
+        { reason = $"Slot at capacity ({groundCapacity} grounds)."; return false; }
+
+        // 1 match per team per weekend
+        if (scheduled.Any(m => IsWeekendEqual(m.Date, slot.Date) &&
+                                (TeamMatch(match.TeamOne, m) || TeamMatch(match.TeamTwo, m))))
+        { reason = "Team already has a match this weekend."; return false; }
+
+        // Full-day availability block
+        if (IsFullDayBlocked(match.TeamOne, slot.Date, league.Constraints) ||
+            IsFullDayBlocked(match.TeamTwo, slot.Date, league.Constraints))
+        { reason = "Full-day availability block."; return false; }
+
+        // Partial-time availability block
+        if (IsTimeSlotBlockedDatetime(match.TeamOne, slot, league.Constraints) ||
+            IsTimeSlotBlockedDatetime(match.TeamTwo, slot, league.Constraints))
+        { reason = "Time-slot availability block."; return false; }
+
+        // Max-gap rule (≤2 consecutive no-match weekends)
+        if (ViolatesNoGapRule(match, slot.Date, scheduled))
+        { reason = "Would violate max 2 consecutive no-match weekends."; return false; }
+
+        return true;
+    }
+
+    private static bool IsTimeSlotBlockedDatetime(string team, DateTimeSlot slot, List<SchedulingRequest> constraints) =>
+        constraints.Any(c =>
+            string.Equals(c.TeamName, team, StringComparison.OrdinalIgnoreCase) &&
+            c.Date == slot.Date && !c.IsFullDayBlock &&
+            c.StartTime is not null && c.EndTime is not null &&
+            c.StartTime < slot.TimeSlot.End && slot.TimeSlot.Start < c.EndTime);
 
     internal static DateTime WeekendKey(DateOnly date)
     {
@@ -978,7 +1201,7 @@ internal static class SlotScorer
 
         // Prefer less-used grounds/times for fairness.
         var groundUse = scheduled.Count(m => string.Equals(m.Ground?.Name, slot.Ground.Name, StringComparison.OrdinalIgnoreCase));
-        var timeUse = scheduled.Count(m => m.Slot?.Start == slot.TimeSlot.Start && m.Slot?.End == slot.TimeSlot.End);
+        var timeUse = scheduled.Count(m => m.Slot?.Start == slot.TimeSlot.Start);
         score += Math.Max(0, 100 - (groundUse * 10));
         score += Math.Max(0, 100 - (timeUse * 8));
 
@@ -1141,4 +1364,266 @@ public sealed class RelaxedConstraints
         RelaxDateRestriction     = true,
         RelaxDiscardedDates      = true
     };
+}
+
+// ── Schedule / Umpiring verification results ──────────────────────────────────
+
+public sealed class ScheduleVerificationResult
+{
+    public bool IsValid { get; init; }
+    public List<(Match Match, string Reason)> Violations { get; init; } = [];
+}
+
+public sealed class UmpiringVerificationResult
+{
+    public bool IsValid { get; init; }
+    public List<(Match Match, string Reason)> Violations { get; init; } = [];
+}
+
+// ── Verification methods (partial class extension) ────────────────────────────
+public sealed partial class SchedulingService
+{
+    /// <summary>
+    /// Verifies the scheduled matches for three hard-constraint violations:
+    ///   1. Two matches sharing the same ground + date + time slot.
+    ///   2. A team playing more than one match on the same weekend.
+    ///      (Multiple matches between the same pair across different weekends is valid
+    ///       by design for divisions with FixedPairings / high MatchesPerTeam.)
+    ///   3. A match placed on a forbidden slot.
+    /// Fixed matches are never flagged — they act as immovable anchors. Any conflict
+    /// between a fixed and non-fixed match is always attributed to the non-fixed match.
+    /// Returns every violating non-fixed match.
+    /// </summary>
+    public ScheduleVerificationResult VerifySchedule(League league, List<ForbiddenSlot> forbidden)
+    {
+        var violations = new List<(Match Match, string Reason)>();
+        var flagged    = new HashSet<Match>(ReferenceEqualityComparer.Instance);
+
+        // Process by sequence so "keep the earlier match" is deterministic.
+        var scheduled = league.Matches
+            .Where(m => m.Date is not null && m.Slot is not null && m.Ground is not null)
+            .OrderBy(m => m.Sequence)
+            .ToList();
+
+        // ── 1. Slot conflicts (same ground + date + time) ─────────────────────
+        // Fixed matches are pre-seeded as occupants so they are never displaced;
+        // only non-fixed matches can be flagged for a slot conflict.
+        var slotOccupant = new Dictionary<string, Match>(StringComparer.OrdinalIgnoreCase);
+        foreach (var match in scheduled.Where(m => m.IsFixed))
+            slotOccupant[$"{match.Date}|{match.Slot!.Start:HH\\:mm}|{match.Ground!.Name}"] = match;
+
+        foreach (var match in scheduled.Where(m => !m.IsFixed))
+        {
+            var key = $"{match.Date}|{match.Slot!.Start:HH\\:mm}|{match.Ground!.Name}";
+            if (slotOccupant.TryGetValue(key, out var occupant))
+            {
+                flagged.Add(match);
+                violations.Add((match,
+                    $"Slot conflict: ground '{match.Ground.Name}' at {match.Slot.Start:HH\\:mm} on {match.Date:MM/dd/yyyy} " +
+                    $"already occupied by match #{occupant.Sequence} ({occupant.TeamOne} vs {occupant.TeamTwo})"));
+            }
+            else
+            {
+                slotOccupant[key] = match;
+            }
+        }
+
+        // ── 2. Team with >1 match on same weekend ─────────────────────────────
+        // Note: same two teams can legitimately play each other multiple times across
+        // different weekends (division FixedPairings), but never on the same weekend.
+        // Fixed matches are pre-seeded so conflicts are always attributed to the non-fixed match.
+        var teamWeekendOccupant = new Dictionary<string, Match>(StringComparer.OrdinalIgnoreCase);
+        foreach (var match in scheduled.Where(m => m.IsFixed))
+        {
+            var weekend = ConstraintEvaluator.WeekendKey(match.Date!.Value).ToString("yyyy-MM-dd");
+            foreach (var team in new[] { match.TeamOne, match.TeamTwo })
+                teamWeekendOccupant.TryAdd($"{team}|{weekend}", match);
+        }
+
+        foreach (var match in scheduled.Where(m => !m.IsFixed && !flagged.Contains(m)))
+        {
+            var weekend = ConstraintEvaluator.WeekendKey(match.Date!.Value).ToString("yyyy-MM-dd");
+            foreach (var team in new[] { match.TeamOne, match.TeamTwo })
+            {
+                var key = $"{team}|{weekend}";
+                if (teamWeekendOccupant.TryGetValue(key, out var existing))
+                {
+                    if (!flagged.Contains(match))
+                    {
+                        flagged.Add(match);
+                        violations.Add((match,
+                            $"Team '{team}' already has match #{existing.Sequence} " +
+                            $"({existing.TeamOne} vs {existing.TeamTwo}) on the same weekend"));
+                    }
+                }
+                else
+                {
+                    teamWeekendOccupant[key] = match;
+                }
+            }
+        }
+
+        // ── 3. Forbidden slots ────────────────────────────────────────────────
+        // Fixed matches may intentionally occupy forbidden slots; skip them entirely.
+        foreach (var match in scheduled.Where(m => !m.IsFixed && !flagged.Contains(m)))
+        {
+            foreach (var f in forbidden)
+            {
+                bool divOk  = f.Division   is null || string.Equals(f.Division,   match.DivisionName, StringComparison.OrdinalIgnoreCase);
+                bool dateOk = f.Date       is null || f.Date == match.Date;
+                bool gndOk  = f.GroundName is null || string.Equals(f.GroundName, match.Ground!.Name,  StringComparison.OrdinalIgnoreCase);
+                bool slotOk = f.TimeSlot   is null || f.TimeSlot.Start == match.Slot!.Start;
+                if (divOk && dateOk && gndOk && slotOk)
+                {
+                    flagged.Add(match);
+                    violations.Add((match, $"Scheduled on forbidden slot ({f.Display})"));
+                    break;
+                }
+            }
+        }
+
+        return new ScheduleVerificationResult { IsValid = violations.Count == 0, Violations = violations };
+    }
+
+    /// <summary>
+    /// Verifies umpiring assignments against five hard rules:
+    ///   1. A team must not umpire in its own division.
+    ///   2. A team must not umpire at a different ground than where it plays that weekend.
+    ///   3. A team must not umpire in the same time slot as its own match.
+    ///   4. A team must not umpire more than once per weekend.
+    ///   5. A team's total umpiring duties must not exceed ⌈matchesPlaying / 2⌉.
+    /// Fixed matches are excluded from violation checking (their assignments are intentionally locked),
+    /// but their umpire loads still count toward the caps for non-fixed matches.
+    /// Returns every non-fixed match whose UmpireOne assignment violates at least one rule.
+    /// </summary>
+    public UmpiringVerificationResult VerifyUmpiring(League league)
+    {
+        var violations = new List<(Match Match, string Reason)>();
+        var matches    = league.Matches.Where(m => m.Date is not null && m.Slot is not null).ToList();
+
+        // Build team → division lookup
+        var teamDivision = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var div in league.Divisions)
+            foreach (var t in div.Teams)
+                teamDivision[t.Name] = div.Name;
+
+        // Compute matches-played count per team (for the ⌈n/2⌉ cap)
+        var matchesPlaying = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in matches)
+        {
+            matchesPlaying[m.TeamOne] = matchesPlaying.GetValueOrDefault(m.TeamOne, 0) + 1;
+            matchesPlaying[m.TeamTwo] = matchesPlaying.GetValueOrDefault(m.TeamTwo, 0) + 1;
+        }
+
+        // Total umpiring load per team
+        var umpireLoad = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in matches.Where(x => x.UmpireOne is not null))
+            umpireLoad[m.UmpireOne!] = umpireLoad.GetValueOrDefault(m.UmpireOne!, 0) + 1;
+
+        // Per-umpire-per-weekend: track to detect rule 4 (>1 assignment per weekend)
+        var umpireWeekendMatches = new Dictionary<string, List<Match>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in matches.Where(x => x.UmpireOne is not null && x.Date is not null))
+        {
+            var wk = $"{m.UmpireOne!}|{ConstraintEvaluator.WeekendKey(m.Date!.Value):yyyy-MM-dd}";
+            if (!umpireWeekendMatches.TryGetValue(wk, out var list))
+                umpireWeekendMatches[wk] = list = [];
+            list.Add(m);
+        }
+
+        foreach (var match in matches.Where(m => m.UmpireOne is not null && !m.IsFixed))
+        {
+            var umpire  = match.UmpireOne!;
+            var reasons = new List<string>();
+
+            // Rule 1: own division
+            if (teamDivision.TryGetValue(umpire, out var umpDiv) &&
+                string.Equals(umpDiv, match.DivisionName, StringComparison.OrdinalIgnoreCase))
+                reasons.Add("umpiring own division");
+
+            // Locate umpire's own playing match on the same weekend
+            var ownMatch = matches.FirstOrDefault(m => m != match && m.Date is not null &&
+                ConstraintEvaluator.IsWeekendEqual(m.Date, match.Date!.Value) &&
+                ConstraintEvaluator.TeamMatch(umpire, m));
+
+            if (ownMatch is not null)
+            {
+                // Rule 3: same date + time slot as own match
+                if (ownMatch.Date == match.Date && ownMatch.Slot?.Start == match.Slot?.Start)
+                    reasons.Add("umpiring in the same slot as own match");
+                // Rule 2: different ground from own match on the same weekend
+                else if (!string.Equals(ownMatch.Ground?.Name, match.Ground?.Name, StringComparison.OrdinalIgnoreCase))
+                    reasons.Add($"umpiring at '{match.Ground?.Name ?? "?"}' but own match is at '{ownMatch.Ground?.Name ?? "?"}'");
+            }
+
+            // Rule 4: >1 umpiring duty per weekend — flag the later match(es), keep the first
+            var wkKey = $"{umpire}|{ConstraintEvaluator.WeekendKey(match.Date!.Value):yyyy-MM-dd}";
+            if (umpireWeekendMatches.TryGetValue(wkKey, out var wkList) && wkList.Count > 1)
+            {
+                var first = wkList.OrderBy(m => m.Date).ThenBy(m => m.Slot?.Start).First();
+                if (match != first)
+                    reasons.Add("umpiring more than once this weekend");
+            }
+
+            // Rule 5: total load cap
+            var cap = (int)Math.Ceiling(matchesPlaying.GetValueOrDefault(umpire, 0) / 2.0);
+            if (umpireLoad.GetValueOrDefault(umpire, 0) > cap)
+                reasons.Add($"total umpiring duties ({umpireLoad[umpire]}) exceed cap ⌈{matchesPlaying.GetValueOrDefault(umpire, 0)}/2⌉ = {cap}");
+
+            if (reasons.Count > 0)
+                violations.Add((match, string.Join("; ", reasons)));
+        }
+
+        return new UmpiringVerificationResult { IsValid = violations.Count == 0, Violations = violations };
+    }
+
+    /// <summary>
+    /// Verifies that every match pair defined by the current division settings exists in
+    /// either league.Matches (scheduled) or league.UnscheduledMatches. Any expected pair
+    /// not accounted for is created and appended to league.UnscheduledMatches with a
+    /// descriptive reason. Handles fixed-pairing divisions where the same pair can appear
+    /// multiple times — each expected occurrence must be satisfied by a distinct actual match.
+    /// Returns the count of pairs restored.
+    /// </summary>
+    public int RestoreMissingPairs(League league)
+    {
+        var expected = MatchGenerator.GenerateMatches(league);
+
+        // Build a multiset of actual matches using a canonical, case-insensitive key so
+        // that (TeamOne, TeamTwo) order and casing differences do not cause false misses.
+        var remaining = new Dictionary<(string, string, string), int>();
+        foreach (var m in league.Matches.Concat(league.UnscheduledMatches))
+        {
+            var key = PairKey(m.TeamOne, m.TeamTwo, m.DivisionName);
+            remaining[key] = remaining.GetValueOrDefault(key, 0) + 1;
+        }
+
+        int restored = 0;
+        foreach (var m in expected)
+        {
+            var key = PairKey(m.TeamOne, m.TeamTwo, m.DivisionName);
+            if (remaining.GetValueOrDefault(key, 0) > 0)
+            {
+                remaining[key]--;
+            }
+            else
+            {
+                m.UnscheduledReason = "Missing pair — restored by pair completion check";
+                league.UnscheduledMatches.Add(m);
+                restored++;
+            }
+        }
+
+        return restored;
+    }
+
+    // Canonical key: alphabetically smaller team first, both names upper-cased so
+    // (TeamOne, TeamTwo) order and name casing are both normalised.
+    private static (string, string, string) PairKey(string t1, string t2, string div)
+    {
+        var a = t1.ToUpperInvariant();
+        var b = t2.ToUpperInvariant();
+        return string.Compare(a, b, StringComparison.Ordinal) <= 0
+            ? (a, b, div.ToUpperInvariant())
+            : (b, a, div.ToUpperInvariant());
+    }
 }

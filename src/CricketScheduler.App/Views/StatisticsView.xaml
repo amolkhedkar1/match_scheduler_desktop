@@ -16,7 +16,13 @@
         <!-- Header -->
         <Border DockPanel.Dock="Top" Background="#F5F5F5" BorderBrush="#CCC"
                 BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="0,0,0,8">
-            <TextBlock Text="Schedule Statistics" FontSize="14" FontWeight="SemiBold" Foreground="#333"/>
+            <DockPanel>
+                <Button x:Name="ExportAllStatsExcelBtn" DockPanel.Dock="Right"
+                        Content="📊 Export All Stats (Excel)"
+                        Padding="10,3" FontSize="12"/>
+                <TextBlock Text="Schedule Statistics" FontSize="14" FontWeight="SemiBold"
+                           Foreground="#333" VerticalAlignment="Center"/>
+            </DockPanel>
         </Border>
 
         <TabControl>
@@ -62,6 +68,21 @@
                     </DockPanel>
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel x:Name="GroundPanel"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </TabItem>
+
+            <!-- Tab 4: Matches Per Week Per Ground -->
+            <TabItem Header="Weekly Ground Usage">
+                <DockPanel Margin="4">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,6,0,6">
+                        <Button x:Name="ExportAllWeeklyGroundBtn" DockPanel.Dock="Right"
+                                Content="📤 Export All" Padding="10,4" Margin="6,0,0,0"/>
+                        <TextBlock Foreground="#555" FontSize="11" VerticalAlignment="Center"
+                                   Text="Total matches per week (Mon–Sun) per ground | Last row = total per week | Last column = total per ground"/>
+                    </DockPanel>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="WeeklyGroundPanel"/>
                     </ScrollViewer>
                 </DockPanel>
             </TabItem>

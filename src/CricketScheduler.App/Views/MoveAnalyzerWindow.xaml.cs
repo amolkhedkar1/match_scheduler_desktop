@@ -14,13 +14,16 @@ public partial class MoveAnalyzerWindow : Window
         DataContext = vm;
         Owner       = owner;
 
-        // Wire commit/push-child callbacks that need a live Window reference
-        vm.OnCommitAction  = () => { DialogResult = true;  Close(); };
+        // Commit closes the window with success.
+        vm.OnCommitAction = () => { DialogResult = true; Close(); };
+
+        // Open a child Move Analyzer; always refresh parent after child closes
+        // so any real-state changes (commit or unschedule) are reflected here.
         vm.OnPushChildAction = childVm =>
         {
             var child = new MoveAnalyzerWindow(childVm, owner: this);
-            if (child.ShowDialog() == true)
-                vm.RefreshAfterChildCommit();
+            child.ShowDialog(); // result doesn't matter — always refresh
+            vm.RefreshAfterChildAction();
         };
     }
 

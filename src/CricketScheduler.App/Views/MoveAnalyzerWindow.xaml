@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:CricketScheduler.App"
         Title="{Binding WindowTitle}"
-        Width="900" MinWidth="700" Height="620" MinHeight="460"
+        Width="960" MinWidth="720" Height="680" MinHeight="500"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResizeWithGrip"
         ShowInTaskbar="False">
@@ -17,106 +17,173 @@
             <Setter Property="BorderThickness" Value="0,0,1,1"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
+        <Style x:Key="Toggle" TargetType="CheckBox">
+            <Setter Property="Margin" Value="0,0,16,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style x:Key="ActionBtn" TargetType="Button">
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="0,0,4,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>   <!-- match banner -->
-            <RowDefinition Height="Auto"/>   <!-- section header: slots -->
-            <RowDefinition Height="2.2*"/>   <!-- upper grid: slot options -->
-            <RowDefinition Height="Auto"/>   <!-- section header: displaced -->
-            <RowDefinition Height="1.8*"/>   <!-- lower grid: displaced matches -->
+            <RowDefinition Height="Auto"/>   <!-- constraint relaxation toggles -->
+            <RowDefinition Height="Auto"/>   <!-- section header: potential slots -->
+            <RowDefinition Height="2*"/>     <!-- potential slots grid -->
+            <RowDefinition Height="Auto"/>   <!-- section header: affected matches -->
+            <RowDefinition Height="1.5*"/>   <!-- affected matches grid -->
             <RowDefinition Height="Auto"/>   <!-- status bar -->
             <RowDefinition Height="Auto"/>   <!-- buttons -->
         </Grid.RowDefinitions>
 
         <!-- ── MATCH BANNER ──────────────────────────────────────────────── -->
-        <Border Grid.Row="0" Background="#1565C0" CornerRadius="5" Padding="12,8" Margin="0,0,0,10">
+        <Border Grid.Row="0" Background="#1565C0" CornerRadius="5" Padding="12,8" Margin="0,0,0,8">
             <StackPanel>
                 <TextBlock Text="{Binding MatchTitle}" Foreground="White"
-                           FontSize="16" FontWeight="Bold"/>
+                           FontSize="15" FontWeight="Bold"/>
                 <TextBlock Text="{Binding MatchDetail}" Foreground="#BBDEFB"
-                           FontSize="12" Margin="0,2,0,0"/>
+                           FontSize="11" Margin="0,2,0,0"/>
             </StackPanel>
         </Border>
 
-        <!-- ── SECTION: TARGET SLOTS ─────────────────────────────────────── -->
-        <Border Grid.Row="1" Background="#E8EAF6" CornerRadius="3" Padding="8,5" Margin="0,0,0,4">
+        <!-- ── CONSTRAINT RELAXATION TOGGLES ─────────────────────────────── -->
+        <Border Grid.Row="1" Background="#F3E5F5" CornerRadius="3"
+                BorderBrush="#CE93D8" BorderThickness="1"
+                Padding="10,7" Margin="0,0,0,8">
+            <StackPanel>
+                <TextBlock FontWeight="SemiBold" Foreground="#6A1B9A" FontSize="11" Margin="0,0,0,5">
+                    ⚙ Constraint Relaxation — check to include slots that violate these rules
+                </TextBlock>
+                <WrapPanel>
+                    <CheckBox Content="Ground Fairness"
+                              Style="{StaticResource Toggle}"
+                              IsChecked="{Binding RelaxGroundFairness}"
+                              ToolTip="Allow assigning to an over-used ground"/>
+                    <CheckBox Content="Umpire Fairness"
+                              Style="{StaticResource Toggle}"
+                              IsChecked="{Binding RelaxUmpireFairness}"
+                              ToolTip="Assign umpires regardless of current umpiring-duty load"/>
+                    <CheckBox Content="Slot Fairness"
+                              Style="{StaticResource Toggle}"
+                              IsChecked="{Binding RelaxTimeSlotFairness}"
+                              ToolTip="Allow using an already over-used time slot"/>
+                    <CheckBox Content="2 Week Break"
+                              Style="{StaticResource Toggle}"
+                              IsChecked="{Binding RelaxMaxGapRule}"
+                              ToolTip="Allow a team to sit out more than 2 consecutive weekends"/>
+                    <CheckBox Content="1 Match / Weekend"
+                              Style="{StaticResource Toggle}"
+                              IsChecked="{Binding RelaxOneMatchPerWeekend}"
+                              ToolTip="Allow a team to play more than one match in the same weekend"/>
+                    <CheckBox Content="Slot Restriction"
+                              Style="{StaticResource Toggle}"
+                              IsChecked="{Binding RelaxTimeSlotRestriction}"
+                              ToolTip="Ignore team-specific time-slot unavailability (partial-time blocks)"/>
+                    <CheckBox Content="Date Restriction"
+                              Style="{StaticResource Toggle}"
+                              IsChecked="{Binding RelaxDateRestriction}"
+                              ToolTip="Ignore team-specific full-day date unavailability blocks"/>
+                    <CheckBox Content="Blackout Dates"
+                              Style="{StaticResource Toggle}"
+                              IsChecked="{Binding RelaxDiscardedDates}"
+                              ToolTip="Allow scheduling on tournament blackout / discarded dates"/>
+                </WrapPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- ── SECTION: POTENTIAL SLOTS ──────────────────────────────────── -->
+        <Border Grid.Row="2" Background="#E8EAF6" CornerRadius="3" Padding="8,5" Margin="0,0,0,4">
             <TextBlock FontWeight="SemiBold" Foreground="#283593">
-                📋  Step 1 — Select a target slot for this match
+                📋  Step 1 — Select a target slot
                 <Run Foreground="#666" FontWeight="Normal" FontSize="11">
-                    (green = free slot, no conflicts · click to see impact below)
+                    (green = no conflicts · select to see affected matches below)
                 </Run>
             </TextBlock>
         </Border>
 
-        <!-- Upper grid: all slot options -->
-        <DataGrid Grid.Row="2" x:Name="SlotGrid"
-                  ItemsSource="{Binding SlotOptions}"
-                  SelectedItem="{Binding SelectedSlot}"
+        <!-- Potential Slots Grid -->
+        <DataGrid Grid.Row="3" x:Name="PotentialSlotsGrid"
+                  ItemsSource="{Binding PotentialSlots}"
+                  SelectedItem="{Binding SelectedPotentialSlot}"
                   AutoGenerateColumns="False" IsReadOnly="True"
                   GridLinesVisibility="Horizontal" HeadersVisibility="Column"
                   CanUserResizeColumns="True" CanUserSortColumns="True"
                   SelectionMode="Single" Margin="0,0,0,8"
                   ColumnHeaderStyle="{StaticResource ColHdr}">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Date"      Binding="{Binding DateDisplay}"                    Width="140"/>
-                <DataGridTextColumn Header="Time"      Binding="{Binding TimeRange}"                      Width="120"/>
+                <DataGridTextColumn Header="Date"      Binding="{Binding DateDisplay}"                    Width="150"/>
+                <DataGridTextColumn Header="Time Slot" Binding="{Binding TimeRange}"                      Width="120"/>
                 <DataGridTextColumn Header="Ground"    Binding="{Binding GroundName}"                     Width="120"/>
-                <DataGridTextColumn Header="Affected"  Binding="{Binding AffectedCount}"                  Width="75"/>
+                <DataGridTextColumn Header="Conflicts" Binding="{Binding ConflictCount}"                  Width="80"/>
                 <DataGridTextColumn Header="Fairness"  Binding="{Binding FairnessScore, StringFormat=F1}" Width="75"/>
-                <DataGridTextColumn Header="Status"    Binding="{Binding Summary}"                        Width="*"/>
             </DataGrid.Columns>
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
                     <Style.Triggers>
-                        <DataTrigger Binding="{Binding IsRecommended}" Value="True">
+                        <DataTrigger Binding="{Binding ConflictCount}" Value="0">
                             <Setter Property="Background" Value="#C8E6C9"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
-                            <Setter Property="ToolTip" Value="✅ Free slot — no matches displaced"/>
-                        </DataTrigger>
-                        <DataTrigger Binding="{Binding AffectedCount}" Value="0">
-                            <Setter Property="Background" Value="#E8F5E9"/>
+                            <Setter Property="ToolTip"    Value="Free slot — no conflicts. Can commit immediately."/>
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
             </DataGrid.RowStyle>
         </DataGrid>
 
-        <!-- ── SECTION: DISPLACED MATCHES ───────────────────────────────── -->
-        <Border Grid.Row="3" Background="#FFF3E0" CornerRadius="3" Padding="8,5" Margin="0,0,0,4">
+        <!-- ── SECTION: AFFECTED MATCHES ─────────────────────────────────── -->
+        <Border Grid.Row="4" Background="#FFF3E0" CornerRadius="3" Padding="8,5" Margin="0,0,0,4">
             <TextBlock FontWeight="SemiBold" Foreground="#E65100">
-                ♟  Step 2 — Resolve displaced matches
+                ♟  Step 2 — Resolve conflicts
                 <Run Foreground="#666" FontWeight="Normal" FontSize="11">
-                    (matches that must move if you pick the slot above · auto-resolved = ✅ · needs work = click Resolve)
+                    (matches displaced by the selected slot · Move Analyzer = re-place · Unschedule = bump)
                 </Run>
             </TextBlock>
         </Border>
 
-        <!-- Lower grid: displaced matches + auto-resolve destination -->
-        <DataGrid Grid.Row="4" x:Name="DisplacedGrid"
-                  ItemsSource="{Binding DisplacedMatches}"
+        <!-- Affected Matches Grid -->
+        <DataGrid Grid.Row="5" x:Name="AffectedMatchesGrid"
+                  ItemsSource="{Binding AffectedMatches}"
                   AutoGenerateColumns="False" IsReadOnly="True"
                   GridLinesVisibility="Horizontal" HeadersVisibility="Column"
-                  CanUserResizeColumns="True" CanUserSortColumns="True"
+                  CanUserResizeColumns="True" CanUserSortColumns="False"
                   SelectionMode="Single" Margin="0,0,0,8"
                   ColumnHeaderStyle="{StaticResource ColHdr}">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Match"        Binding="{Binding MatchTitle}"    Width="230"/>
-                <DataGridTextColumn Header="Current Slot" Binding="{Binding CurrentSlot}"   Width="200"/>
-                <DataGridTextColumn Header="Resolution"   Binding="{Binding AutoResolveTo}" Width="*"/>
-                <!-- Resolve button — only shown when auto-resolve is not possible -->
-                <DataGridTemplateColumn Header="Action" Width="90">
+                <DataGridTextColumn Header="Match"              Binding="{Binding MatchTitle}"        Width="*"/>
+                <DataGridTextColumn Header="Current Assignment" Binding="{Binding CurrentAssignment}" Width="200"/>
+                <!-- Move Analyzer button — opens recursive child analyzer -->
+                <DataGridTemplateColumn Header="Move Analyzer" Width="120">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
-                            <Button Content="🔍 Resolve"
-                                    Visibility="{Binding CanAutoResolve,
-                                        Converter={x:Static local:InverseBoolToVisibilityConverter.Instance}}"
-                                    Command="{Binding DataContext.ResolveDisplacedCommand,
+                            <Button Content="↔ Analyze"
+                                    Style="{StaticResource ActionBtn}"
+                                    Background="#1565C0" Foreground="White"
+                                    Command="{Binding DataContext.OpenChildAnalyzerCommand,
                                         RelativeSource={RelativeSource AncestorType=Window}}"
                                     CommandParameter="{Binding}"
-                                    Padding="6,3" FontSize="11"
-                                    Background="#E65100" Foreground="White"/>
+                                    ToolTip="Open Move Analyzer for this match to find it a new slot"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <!-- Unschedule button — only shown for non-fixed matches -->
+                <DataGridTemplateColumn Header="Unschedule" Width="110">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="📤 Bump"
+                                    Style="{StaticResource ActionBtn}"
+                                    Background="#C62828" Foreground="White"
+                                    Visibility="{Binding CanUnschedule,
+                                        Converter={StaticResource BoolVis}}"
+                                    Command="{Binding DataContext.UnscheduleMatchCommand,
+                                        RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}"
+                                    ToolTip="Remove this match from the schedule (real state) and free its slot"/>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
@@ -124,21 +191,17 @@
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
                     <Style.Triggers>
-                        <DataTrigger Binding="{Binding CanAutoResolve}" Value="True">
+                        <DataTrigger Binding="{Binding CanUnschedule}" Value="False">
                             <Setter Property="Background" Value="#E8F5E9"/>
-                            <Setter Property="ToolTip" Value="✅ Can be auto-resolved — will be moved when you commit"/>
-                        </DataTrigger>
-                        <DataTrigger Binding="{Binding CanAutoResolve}" Value="False">
-                            <Setter Property="Background" Value="#FFF3E0"/>
-                            <Setter Property="ToolTip" Value="⚠ No free slot — click Resolve to open sub-analyzer"/>
+                            <Setter Property="ToolTip"    Value="Fixed match — cannot be unscheduled"/>
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
             </DataGrid.RowStyle>
         </DataGrid>
 
-        <!-- ── STATUS BAR ────────────────────────────────────────────────── -->
-        <Border Grid.Row="5" Background="#F5F5F5" CornerRadius="3"
+        <!-- ── STATUS BAR ─────────────────────────────────────────────────── -->
+        <Border Grid.Row="6" Background="#F5F5F5" CornerRadius="3"
                 Padding="10,6" Margin="0,0,0,10"
                 BorderBrush="#DDD" BorderThickness="1">
             <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap"
@@ -146,20 +209,22 @@
         </Border>
 
         <!-- ── BUTTONS ────────────────────────────────────────────────────── -->
-        <DockPanel Grid.Row="6" LastChildFill="False">
+        <DockPanel Grid.Row="7" LastChildFill="False">
             <Button DockPanel.Dock="Left"
                     Content="✔  Commit Move"
                     Command="{Binding CommitMoveCommand}"
                     IsEnabled="{Binding CanCommit}"
                     Padding="16,8" FontWeight="SemiBold" FontSize="13"
-                    Background="#2E7D32" Foreground="White"/>
+                    Background="#2E7D32" Foreground="White"
+                    ToolTip="Assign match to selected slot in real schedule (only enabled when Conflicts = 0)"/>
             <TextBlock DockPanel.Dock="Left" Margin="12,0,0,0"
                        VerticalAlignment="Center" FontSize="11" Foreground="#555"
-                       Text="Commit applies this move and all auto-resolutions simultaneously."/>
+                       Text="Commit is only available when the selected slot has 0 conflicts."/>
             <Button DockPanel.Dock="Right"
                     Content="✕  Cancel"
                     Click="Cancel_Click"
-                    Padding="12,8" Background="#C62828" Foreground="White"/>
+                    Padding="12,8" Background="#757575" Foreground="White"
+                    ToolTip="Close without committing (any Unschedule actions already applied remain)"/>
         </DockPanel>
     </Grid>
 </Window>

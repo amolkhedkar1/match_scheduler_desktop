@@ -236,13 +236,18 @@
                 <Grid Margin="0,6,0,0">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>  <!-- action bar -->
-                        <RowDefinition Height="Auto"/>  <!-- manual scheduling panel -->
                         <RowDefinition Height="*"/>     <!-- unscheduled grid -->
                     </Grid.RowDefinitions>
 
                     <!-- Action bar -->
                     <Border Grid.Row="0" Style="{StaticResource Pill}">
                         <WrapPanel>
+                            <Button Content="↔ Move Analyzer"
+                                    Padding="14,6" Margin="0,0,8,0"
+                                    Command="{Binding OpenRescheduleAnalyzerCommand}"
+                                    Background="#1565C0" Foreground="White" FontWeight="SemiBold"
+                                    ToolTip="Open Move Analyzer for the selected unscheduled match — explore slots, resolve conflicts, commit"/>
+                            <Separator Width="1" Height="22" Background="#CCC" Margin="0,0,8,0"/>
                             <Button Content="✅ Relax All Selected"   Padding="10,5" Margin="0,0,6,0"
                                     Command="{Binding RelaxAllConstraintsCommand}"
                                     CommandParameter="{Binding ElementName=UnscheduledGrid}"/>
@@ -251,7 +256,9 @@
                                     CommandParameter="{Binding ElementName=UnscheduledGrid}"/>
                             <Button Content="🔁 Backtrack Reschedule" Padding="12,5" Margin="0,0,6,0"
                                     Command="{Binding BacktrackRescheduleCommand}"
-                                    Background="#E65100" Foreground="White" FontWeight="SemiBold"/>
+                                    Background="#E65100" Foreground="White" FontWeight="SemiBold"
+                                    ToolTip="Retry placing unscheduled matches using their relaxation flags"/>
+                            <Separator Width="1" Height="22" Background="#CCC" Margin="0,0,6,0"/>
                             <Button Content="📤 Export Unscheduled"   Padding="10,5" Margin="0,0,6,0"
                                     Command="{Binding ExportUnscheduledCommand}"/>
                             <Button Content="🗑 Remove Selected"      Padding="10,5"
@@ -260,181 +267,13 @@
                                        FontSize="11" Foreground="#555">
                                 <Run FontWeight="SemiBold" Foreground="#E65100"
                                      Text="{Binding UnscheduledMatches.Count, StringFormat='{}⚠ {0} unscheduled', Mode=OneWay}"/>
-                                <Run Text=" — select a match, fill slot below, click Schedule."/>
+                                <Run Text=" — select a match and click Move Analyzer to explore slots."/>
                             </TextBlock>
                         </WrapPanel>
                     </Border>
 
-                    <!-- Manual scheduling panel -->
-                    <Border Grid.Row="1" BorderBrush="#1976D2" BorderThickness="1"
-                            CornerRadius="4" Padding="10,8" Background="#E3F2FD" Margin="0,0,0,6">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-
-                            <!-- Selected match banner -->
-                            <TextBlock Grid.Row="0" FontWeight="SemiBold" Foreground="#0D47A1"
-                                       FontSize="13" Margin="0,0,0,6">
-                                <Run Text="📅 Scheduling: "/>
-                                <Run Text="{Binding SelectedUnscheduledMatch.TeamOne, Mode=OneWay, FallbackValue='—'}"/>
-                                <Run Text=" vs "/>
-                                <Run Text="{Binding SelectedUnscheduledMatch.TeamTwo, Mode=OneWay, FallbackValue='—'}"/>
-                                <Run Text="  "/>
-                                <Run Text="{Binding SelectedUnscheduledMatch.Division, Mode=OneWay, FallbackValue='(select a row below)'}"/>
-                                <Run Text="  " FontSize="11" Foreground="#666"/>
-                                <Run Text="Double-click an analysis row to auto-fill inputs."
-                                     FontSize="11" FontWeight="Normal" Foreground="#555"/>
-                            </TextBlock>
-
-                            <!-- Input fields -->
-                            <WrapPanel Grid.Row="1" Margin="0,0,0,8">
-                                <StackPanel Margin="0,0,12,0">
-                                    <TextBlock Text="Date (yyyy-MM-dd) *" FontSize="11" Foreground="#555" Margin="0,0,0,2"/>
-                                    <TextBox Text="{Binding ManualScheduleDate, UpdateSourceTrigger=PropertyChanged}"
-                                             Width="130" Padding="4,3"/>
-                                </StackPanel>
-                                <StackPanel Margin="0,0,12,0">
-                                    <TextBlock Text="Time Slot" FontSize="11" Foreground="#555" Margin="0,0,0,2"/>
-                                    <ComboBox Width="155" ItemsSource="{Binding TimeSlotDisplays}"
-                                              SelectedItem="{Binding ManualScheduleTimeSlot}"/>
-                                </StackPanel>
-                                <StackPanel Margin="0,0,12,0">
-                                    <TextBlock Text="Ground" FontSize="11" Foreground="#555" Margin="0,0,0,2"/>
-                                    <ComboBox Width="130" ItemsSource="{Binding GroundNames}"
-                                              Text="{Binding ManualScheduleGround, UpdateSourceTrigger=PropertyChanged}"
-                                              IsEditable="True"/>
-                                </StackPanel>
-                                <StackPanel Margin="0,0,12,0">
-                                    <TextBlock Text="Umpiring Team" FontSize="11" Foreground="#555" Margin="0,0,0,2"/>
-                                    <ComboBox Width="150" ItemsSource="{Binding AllTeamNames}"
-                                              Text="{Binding ManualScheduleUmpire, UpdateSourceTrigger=PropertyChanged}"
-                                              IsEditable="True"/>
-                                </StackPanel>
-                                <StackPanel VerticalAlignment="Bottom">
-                                    <Button Content="✔ Schedule Match"
-                                            Command="{Binding ScheduleSelectedUnscheduledCommand}"
-                                            Padding="14,7" Background="#1565C0" Foreground="White" FontWeight="SemiBold"/>
-                                </StackPanel>
-                            </WrapPanel>
-
-                            <!-- Available slot analysis -->
-                            <Expander Grid.Row="2"
-                                      Header="📊 Available Slots Analysis — click to see affected matches · double-click to auto-fill inputs above"
-                                      IsExpanded="True">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>  <!-- slot options grid -->
-                                        <RowDefinition Height="Auto"/>  <!-- affected matches panel -->
-                                    </Grid.RowDefinitions>
-
-                                    <!-- ── Step 1: slot options ── -->
-                                    <DataGrid Grid.Row="0" x:Name="UnscheduledAnalysisGrid"
-                                              ItemsSource="{Binding UnscheduledMoveOptions}"
-                                              SelectedItem="{Binding SelectedUnscheduledMoveOption}"
-                                              AutoGenerateColumns="False" IsReadOnly="True"
-                                              MaxHeight="130" GridLinesVisibility="Horizontal"
-                                              HeadersVisibility="Column" CanUserSortColumns="True"
-                                              SelectionMode="Single"
-                                              ColumnHeaderStyle="{StaticResource ColHdr}">
-                                        <DataGrid.Columns>
-                                            <DataGridTextColumn Header="Date"     Binding="{Binding DateDisplay}"                    Width="140"/>
-                                            <DataGridTextColumn Header="Time"     Binding="{Binding TimeRange}"                      Width="140"/>
-                                            <DataGridTextColumn Header="Ground"   Binding="{Binding GroundName}"                     Width="110"/>
-                                            <DataGridTextColumn Header="Affected" Binding="{Binding AffectedMatches}"               Width="80"/>
-                                            <DataGridTextColumn Header="Fairness" Binding="{Binding FairnessScore, StringFormat=F1}" Width="75"/>
-                                            <DataGridTextColumn Header="Status"   Binding="{Binding Summary}"                        Width="*"/>
-                                        </DataGrid.Columns>
-                                        <DataGrid.RowStyle>
-                                            <Style TargetType="DataGridRow">
-                                                <EventSetter Event="MouseDoubleClick"
-                                                             Handler="UnscheduledAnalysisRow_DoubleClick"/>
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding IsRecommended}" Value="True">
-                                                        <Setter Property="Background" Value="#C8E6C9"/>
-                                                        <Setter Property="FontWeight" Value="SemiBold"/>
-                                                        <Setter Property="ToolTip" Value="★ Free slot — double-click to fill inputs"/>
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </DataGrid.RowStyle>
-                                    </DataGrid>
-
-                                    <!-- ── Step 2: affected matches (only shown when selected slot has conflicts) ── -->
-                                    <Border Grid.Row="1"
-                                            Visibility="{Binding HasAffectedMatches, Converter={StaticResource BoolVis}}"
-                                            Background="#FFF8E1" BorderBrush="#FFB300" BorderThickness="1"
-                                            CornerRadius="3" Padding="6,5" Margin="0,6,0,0">
-                                        <Grid>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
-                                                <RowDefinition Height="Auto"/>
-                                            </Grid.RowDefinitions>
-
-                                            <TextBlock Grid.Row="0" FontWeight="SemiBold" Foreground="#E65100" Margin="0,0,0,4">
-                                                ♟ Affected Matches — resolve all before scheduling
-                                                <Run Foreground="#666" FontWeight="Normal" FontSize="11">
-                                                    (✅ green = engine can auto-move · ⚠ orange = click Resolve)
-                                                </Run>
-                                            </TextBlock>
-
-                                            <DataGrid Grid.Row="1" x:Name="AffectedMatchesGrid"
-                                                      ItemsSource="{Binding AffectedMatchesForSelectedSlot}"
-                                                      AutoGenerateColumns="False" IsReadOnly="True"
-                                                      MaxHeight="120" GridLinesVisibility="Horizontal"
-                                                      HeadersVisibility="Column" CanUserSortColumns="False"
-                                                      SelectionMode="Single"
-                                                      ColumnHeaderStyle="{StaticResource ColHdr}">
-                                                <DataGrid.Columns>
-                                                    <DataGridTextColumn Header="Match"        Binding="{Binding MatchTitle}"        Width="220"/>
-                                                    <DataGridTextColumn Header="Current Slot" Binding="{Binding CurrentSlot}"       Width="180"/>
-                                                    <DataGridTextColumn Header="Resolution"   Binding="{Binding ResolutionDisplay}" Width="*"/>
-                                                    <DataGridTemplateColumn Header="Action" Width="90">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Button Content="🔍 Resolve"
-                                                                        Visibility="{Binding CanAutoResolve,
-                                                                            Converter={x:Static local:InverseBoolToVisibilityConverter.Instance}}"
-                                                                        Command="{Binding DataContext.OpenMoveAnalyzerForAffectedMatchCommand,
-                                                                            RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                                                        CommandParameter="{Binding}"
-                                                                        Padding="6,3" FontSize="11"
-                                                                        Background="#E65100" Foreground="White"/>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                </DataGrid.Columns>
-                                                <DataGrid.RowStyle>
-                                                    <Style TargetType="DataGridRow">
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding CanAutoResolve}" Value="True">
-                                                                <Setter Property="Background" Value="#E8F5E9"/>
-                                                                <Setter Property="ToolTip"    Value="✅ Engine will auto-move this match when you click Schedule Match"/>
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding IsManuallyResolved}" Value="True">
-                                                                <Setter Property="Background" Value="#C8E6C9"/>
-                                                                <Setter Property="FontWeight" Value="SemiBold"/>
-                                                                <Setter Property="ToolTip"    Value="✅ Manually resolved via Move Analyzer"/>
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding CanAutoResolve}" Value="False">
-                                                                <Setter Property="Background" Value="#FFF3E0"/>
-                                                                <Setter Property="ToolTip"    Value="⚠ No free slot — click Resolve to open Move Analyzer"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </DataGrid.RowStyle>
-                                            </DataGrid>
-                                        </Grid>
-                                    </Border>
-                                </Grid>
-                            </Expander>
-                        </Grid>
-                    </Border>
-
                     <!-- Unscheduled matches grid (constraint relaxation) -->
-                    <DataGrid Grid.Row="2" x:Name="UnscheduledGrid"
+                    <DataGrid Grid.Row="1" x:Name="UnscheduledGrid"
                               ItemsSource="{Binding UnscheduledMatches}"
                               SelectedItem="{Binding SelectedUnscheduledMatch}"
                               Style="{StaticResource Grid}"

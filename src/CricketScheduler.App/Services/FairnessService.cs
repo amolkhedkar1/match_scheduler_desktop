@@ -11,6 +11,6 @@ public sealed class FairnessService
 
     public Dictionary<string, int> TimeSlotUsage(IEnumerable<Match> matches) =>
         matches.Where(m => m.Slot is not null)
-            .GroupBy(m => $"{m.Slot!.Start:HH\\:mm}-{m.Slot!.End:HH\\:mm}")
+            .GroupBy(m => $"{m.Slot!.Start:HH\\:mm}")
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
 }

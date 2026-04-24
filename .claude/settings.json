@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:/projects/myrepos/match_scheduler_desktop\" diff HEAD -- src/CricketScheduler.App/ViewModels/StatisticsViewModel.cs)",
+      "Bash(git -C \"c:/projects/myrepos/match_scheduler_desktop\" diff HEAD -- src/CricketScheduler.App/Views/StatisticsView.xaml)",
+      "Bash(git -C \"c:/projects/myrepos/match_scheduler_desktop\" diff HEAD -- src/CricketScheduler.App/Views/StatisticsView.xaml.cs)",
+      "Bash(git -C \"c:/projects/myrepos/match_scheduler_desktop\" diff HEAD -- src/CricketScheduler.App/Services/ExportService.cs)",
+      "Bash(git -C \"c:/projects/myrepos/match_scheduler_desktop\" status --short)"
+    ]
+  }
+}

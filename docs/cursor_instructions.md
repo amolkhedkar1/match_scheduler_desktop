@@ -16,6 +16,7 @@ A **C# WPF desktop application (MVVM pattern)** to create, manage, and schedule 
 | UI | WPF — MVVM via `CommunityToolkit.Mvvm` |
 | Storage | CSV files — one folder per league |
 | CSV parsing | `CsvHelper` |
+| Excel export | `ClosedXML` — single `.xlsx` workbook with multiple sheets |
 | Converter | `InverseBoolConverter` (custom, in root namespace) |
 
 ---
@@ -39,7 +40,7 @@ CricketScheduler/
 │   │   └── LeagueSelectionView.xaml/.cs
 │   ├── ViewModels/
 │   │   ├── MainViewModel.cs           ← single unified ViewModel; stubs for others
-│   │   └── StatisticsViewModel.cs     ← builds 3 DataTable pivots; exposed via MainViewModel.StatisticsVM
+│   │   └── StatisticsViewModel.cs     ← builds 4 DataTable pivots; exposed via MainViewModel.StatisticsVM
 │   ├── Models/
 │   │   ├── League.cs
 │   │   ├── Tournament.cs
@@ -53,7 +54,7 @@ CricketScheduler/
 │   ├── Services/
 │   │   ├── CsvService.cs
 │   │   ├── LeagueService.cs           ← Load/Save all CSVs including schedule.csv + unscheduled.csv
-│   │   ├── SchedulingService.cs       ← Generate (2 overloads), SuggestMoves, RescheduleUmpiring
+│   │   ├── SchedulingService.cs       ← Generate (2 overloads), SuggestMoves, RescheduleUmpiring, RescheduleGroundAndUmpiring
 │   │   ├── ExportService.cs
 │   │   ├── ConstraintService.cs
 │   │   ├── FairnessService.cs
@@ -393,41 +394,49 @@ MatchesPerTeam > (n - 1)
   - 🔴 `#FFEEEE` — conflict detected (`HasConflict=true`)
   - 🟢 `#E8F5E9` — fixed match (`IsFixed=true`)
 
-**Unscheduled Matches section (below scheduled grid):**
+**Unscheduled Matches section (Unscheduled tab):**
 - Persisted to/from `unscheduled.csv` on every save/load
-- **Manual schedule panel** (above unscheduled grid): Date, Time Slot, Ground, Umpiring Team inputs
-- **Schedule Selected** button — assigns panel inputs to selected unscheduled match, moves it to scheduled grid; also applies all pending conflict resolutions (auto and manual) before placing the match
-- **Available Slots Expander** — populated by `SuggestMoves` when an unscheduled row is selected; double-clicking a slot row fills the panel inputs automatically; **single-clicking** a row also loads the Affected Matches panel below
-
-**Affected Matches panel (inside Available Slots Expander — visible when selected slot has conflicts):**
-- Appears automatically below the slot analysis grid when the selected slot is occupied by scheduled matches
-- Bound to `AffectedMatchesForSelectedSlot` (`ObservableCollection<AffectedSlotMatchRow>`) in `MainViewModel`
-- Each row represents one scheduled match that would be displaced if the unscheduled match is placed at the selected slot
-- Row colours:
-  - 🟢 **Green** (`CanAutoResolve=true`) — engine found a free alternative slot; will be moved automatically when "Schedule Match" is clicked; no user action needed
-  - 🟠 **Orange** (`CanAutoResolve=false`) — no free slot exists; user must click **🔍 Resolve** to open the Move Analyzer for that match
-  - 💚 **Bold green** (`IsManuallyResolved=true`) — user resolved via Move Analyzer; the match has already been moved in-place
-- **Resolve button** — shown only for unresolvable rows; opens `MoveAnalyzerWindow` via `OpenMoveAnalyzerForAffectedMatchCommand`; on `DialogResult=true` marks row `IsManuallyResolved=true` and calls `RefreshAffectedMatchAutoResolve()` to re-check other rows; the Move Analyzer receives the unscheduled match as `additionalFixed` so its target slot is excluded from the displaced match's slot suggestions and weekend constraints are correctly checked
-- `RefreshAffectedMatchAutoResolve()` — after a Move Analyzer commit, replaces any row that went from "no free slot" to "free slot available" (swaps the row because `CanAutoResolve` is `init`-only)
-- **Scheduling guard** — `ScheduleSelectedUnscheduled` checks `AffectedMatchesForSelectedSlot` before placing the match:
-  - If any row has `IsResolved=false` → sets `StatusMessage` error and returns
-  - Applies `BestSuggestion` to all auto-resolvable matches, then schedules the unscheduled match
-- `OnSelectedUnscheduledMoveOptionChanged` (partial) — fired when the user selects a slot row; calls `SuggestMoves` for each match in `suggestion.AffectedMatchList` to determine auto-resolvability
-- `OnSelectedUnscheduledMatchChanged` — clears `SelectedUnscheduledMoveOption` and `AffectedMatchesForSelectedSlot` when the user switches to a different unscheduled match
-
-**Constraint Relaxation** per-row checkboxes (see §8.3)
+- **Action bar**: Move Analyzer, Relax All, Clear Relaxations, Backtrack Reschedule, Export, Remove buttons
+- **Move Analyzer button** — opens `MoveAnalyzerWindow` for the selected unscheduled match; on commit the match is moved to the schedule and the unscheduled grid refreshes via `SyncUnscheduledGrid()`
+- **Constraint Relaxation** per-row checkboxes (see §8.3) — affect Backtrack Reschedule only
+- `OpenRescheduleAnalyzerCommand` — creates `MoveAnalyzerViewModel` for the selected match, opens the window; on `DialogResult=true` calls `FinaliseMove()` + `SyncUnscheduledGrid()`
 
 **Move Analyzer (separate window — `MoveAnalyzerWindow`):**
-- Shows match being moved + affected teams
-- `SlotOptions` DataGrid: Date, Time, Ground, Affected Matches, Fairness Score, Recommendation
-  - Shows **both free slots** (0 affected) and **occupied slots** (≥1 displaced non-fixed matches)
-  - 🟢 Recommended rows = 0 collisions + high fairness score
-- **Commit Move** — calls `FinaliseMove()` which saves (`SaveLeagueAsync`) and re-renders the grid (standalone use); in Affected Matches panel use, the move is applied in-place and the caller marks the row resolved without calling `FinaliseMove` until "Schedule Match" is clicked
-- **Cancel** — closes window without saving
+
+Redesigned with two grids and recursive depth support:
+
+**Constraint Relaxation Panel** (top of window):
+- 8 individual checkboxes, one per `RelaxedConstraints` flag, matching the Unscheduled grid labels:
+  - **Ground Fairness** (`RelaxGroundFairness`) — allow over-used ground
+  - **Umpire Fairness** (`RelaxUmpireFairness`) — ignore umpire-duty load
+  - **Slot Fairness** (`RelaxTimeSlotFairness`) — allow over-used time slot
+  - **2 Week Break** (`RelaxMaxGapRule`) — allow >2 consecutive no-match weekends
+  - **1 Match / Weekend** (`RelaxOneMatchPerWeekend`) — allow >1 match per team per weekend
+  - **Slot Restriction** (`RelaxTimeSlotRestriction`) — ignore partial-time unavailability
+  - **Date Restriction** (`RelaxDateRestriction`) — ignore full-day date blocks
+  - **Blackout Dates** (`RelaxDiscardedDates`) — allow scheduling on discarded dates
+- Changing any checkbox immediately reloads the Potential Slots Grid via `BuildRelaxed()` → `SuggestMoves`
+
+**Potential Slots Grid** (primary):
+- Generated by `SuggestMoves` with the current `RelaxedConstraints`
+- Includes ALL valid slots (free and occupied) excluding fixed-occupied and forbidden
+- Columns: Date, Time Slot, Ground, Conflicts, Fairness Score
+- 🟢 Green rows = `ConflictCount == 0` (free slots, immediately commitable)
+- `additionalContext` — parent's tentative placement passed down the recursion chain so child analyzers correctly exclude the parent's target slot
+
+**Affected Matches Grid** (secondary — populated on slot selection):
+- Shows all matches that would be displaced by the selected slot
+- Columns: Match, Current Assignment, [↔ Analyze] button, [📤 Bump] button
+- **↔ Analyze** — opens a child `MoveAnalyzerWindow` for that match; parent always refreshes after child closes
+- **📤 Bump** — real-state mutation: removes the match from `League.Matches`, adds to `League.UnscheduledMatches`, reloads Potential Slots Grid; hidden for fixed matches
+
+**Commit Move** — only enabled when `ConflictCount == 0`; assigns the match to the slot in real state; for unscheduled matches moves from `League.UnscheduledMatches` to `League.Matches`; closes window with `DialogResult=true`
+
+**Recursive chain**: child Move Analyzer receives parent's match tentatively placed at the parent's selected slot as `additionalContext`, so it correctly excludes that slot and respects weekend constraints for the parent's teams. Parent always calls `RefreshAfterChildAction()` when child closes (regardless of commit/cancel) so any real-state changes (bumps) are reflected.
 
 ### 6.5 Statistics Tab (`StatisticsView`)
 
-Read-only pivot grids summarising the current schedule. The tab contains three sub-tabs.
+Read-only pivot grids summarising the current schedule. The tab contains four sub-tabs.
 
 **Data source:** `MainViewModel.StatisticsVM` — a `StatisticsViewModel` instance. `StatisticsVM.RefreshStatistics(matches)` is called at the end of every `RenderSchedule()` call in `MainViewModel`. `StatisticsVM.Clear()` is called from `ClearAllForms()` when no league is loaded.
 
@@ -484,6 +493,26 @@ Read-only pivot grids summarising the current schedule. The tab contains three s
 
 - Only matches with a non-null `Ground` are included.
 - A cell shows a raw integer count (not 0/1 — a team can play multiple matches at the same ground).
+
+#### Sub-tab 4 — Weekly Ground Usage
+
+**Purpose:** shows how many matches are played at each ground per calendar week.
+
+**Grid layout:**
+
+| Column | Content |
+|---|---|
+| `Ground` (first column, fixed) | Ground name; last row = `"Total"` |
+| One column per week (Mon–Sun), ordered ascending | Count of matches at that ground within the week; `·` if zero |
+| `Total` (last column) | Total matches at the ground across all weeks |
+| **Total row (last row)** | Total matches across all grounds per week; last cell = overall total |
+
+- Week columns are labelled by the **Monday** start date of each week in `MM/dd` format (e.g. `"04/07"`).
+- `GetWeekStart(date)` returns the Monday of the week: `date.AddDays(-((date.DayOfWeek - DayOfWeek.Monday + 7) % 7))`.
+- A week spans Monday–Sunday (`weekStart` to `weekStart.AddDays(6)`). Cricket matches fall on Saturday/Sunday so they always land within a single week window.
+- Only matches with both `Date` and `Ground` assigned are included.
+- Zero cells display `·` (middle dot) rather than `0` for readability; the Total row always shows a numeric count.
+- Data source: `StatisticsViewModel.MatchesPerWeekPerGround` — a `List<DivisionStatTable>` with one entry (`DivisionName = "All Divisions"`) containing the single cross-division pivot table.
 
 ---
 
@@ -554,7 +583,7 @@ string? ManualScheduleTimeSlot, ManualScheduleGround, ManualScheduleUmpire
 | `ExportFilteredRequests` | Exports `FilteredRequests` to user-chosen CSV |
 | `DeleteSelectedRequests` | Multi-row delete (takes `DataGrid` parameter) |
 | `SaveSchedule` | Syncs `CurrentLeague.Matches` from `ScheduledMatches`, saves without regenerating |
-| `GenerateSchedule` | Fresh schedule; pre-generates fixed-mode pairings if absent; passes `CurrentLeague.Matches.Where(m => m.IsFixed)` so fixed matches survive unchanged |
+| `GenerateSchedule` | Fresh schedule; pre-generates fixed-mode pairings if absent; passes `CurrentLeague.Matches.Where(m => m.IsFixed)` so fixed matches survive unchanged. Saves relaxation flags before generate using a `(TeamOne, TeamTwo, Division, int occurrenceIndex)` 4-tuple key so duplicate match pairs (same teams in a fixed-pairing division) each get a distinct entry. Runs `RunScheduleVerificationAndRetry` + `RunUmpiringVerificationAndRetry` after generate. |
 | `Reschedule` | Non-destructive: calls `ReschedulePreservingExisting` — keeps all currently scheduled matches as context, only places `UnscheduledMatches`; fixed match umpires/slots preserved |
 | `RescheduleUmpiring` | Clears umpires on non-fixed matches, reassigns using priority rules, saves |
 | `ExportSchedule / ExportFilteredSchedule` | CSV export (all / filtered) |
@@ -565,9 +594,7 @@ string? ManualScheduleTimeSlot, ManualScheduleGround, ManualScheduleUmpire
 | `DeleteSelectedMatches` | Multi-row delete (takes `DataGrid` parameter) |
 | `AddForbiddenSlot / Remove` | Manages forbidden slot list |
 | `AnalyzeMove` | Opens `MoveAnalyzerWindow`; after `DialogResult==true`, awaits `FinaliseMove()` |
-| `ScheduleSelectedUnscheduled` | Schedule selected unscheduled match using panel inputs; applies all pending conflict resolutions (auto + manual) first |
-| `ApplyUnscheduledSlot` | Fill panel inputs from analysis row double-click |
-| `OpenMoveAnalyzerForAffectedMatch` | Open Move Analyzer for an affected match in the slot-conflict panel; passes unscheduled match as `additionalFixed` so its target slot is excluded; marks row `IsManuallyResolved=true` on commit |
+| `OpenRescheduleAnalyzer` | Open Move Analyzer for the selected unscheduled match; on commit calls `FinaliseMove` + `SyncUnscheduledGrid` |
 | `RescheduleGroundAndUmpiring` | Balance ground assignments across all non-fixed matches (greedy per date+slot group), then re-run umpiring; fixed matches untouched |
 | `ClearFilters` | Resets all three filter dropdowns |
 
@@ -674,26 +701,81 @@ MatchesPerTeam > (n - 1)
 ---
 
 
-### 8.2 Optimised Scheduling Algorithm
+### 8.2 Modular Scheduling Pipeline
 
-**`RunOptimisedSchedule`** (called by `Generate`):
-1. **Build slot matrix once** — strips globally forbidden slots up front; division-specific forbidden slots applied per-match (see §9)
-2. **Three orderings tried:**
+The scheduling system is split into **8 independent, loosely coupled routines** (implemented in `SchedulingService.cs` + `SchedulingService.Pipeline.cs`). Each routine is callable independently.
+
+#### Routine 1 — Match Pair Generation (`MatchGenerator.GenerateMatches`)
+Generates all expected match pairs from division config (round-robin or fixed-pairing). See §6.2.
+
+#### Routine 2 — Slot Universe Generation (`SchedulingMatrixBuilder.BuildSlots`)
+Generates all valid `(date × ground × timeslot)` slots:
+- Iterates every weekend (Sat+Sun) between `StartDate` and `EndDate`
+- Skips discarded/blackout dates
+- Crosses every **Ground** with every **TimeSlot** defined in tournament setup
+- **N grounds × M timeslots per date = N×M distinct identifiable slots per date**
+  - Example: 2 grounds × 3 timeslots = 6 slots on a given date; each slot independently bookable
+- Output: `List<SchedulableSlot>` — each entry uniquely identified by `(Date, Ground, TimeSlot)`
+- Globally-forbidden slots (no ground/division qualifier) stripped immediately; division- and ground-specific forbidden slots enforced per-match in Phase 3
+
+#### Routine 3 — Match Scheduling (`ScheduleMatchesToSlots`) — Phase 3
+Assigns a `(Date, Ground, TimeSlot)` to every match. Ground fairness is NOT enforced here — that is Phase 5.
+1. Three orderings tried (picks the one scheduling the most matches):
    - Most-constrained-team first
    - Division-balanced
-   - Fewest-available-slots first (hardest match scheduled first)
-3. **Best result kept** — ordering that schedules the most matches wins
-4. **Backtrack pass** (`BacktrackImprove`) — for each remaining unscheduled match:
-   - Tries a direct slot first
-   - If no direct slot: finds a non-fixed already-scheduled match whose removal frees a valid slot; displaces it, places the current match, then re-places the displaced match
-   -create it as a tree backtracking, create differnt branches of solution and selct best branch, go for upto three branches of solution at each level of tree.
-5. Both `TryScheduleOrdering` and `BacktrackImprove` call `IsForbiddenForMatch` per match for division-aware enforcement
-6. Fixed matches passed in to `Generate` are kept unchanged (slots, umpires, grounds all preserved); only non-fixed matches are regenerated
+   - Fewest-available-slots first (hardest match placed first)
+2. `TrySlotOrdering` — greedy pass; each match picks the highest-scoring valid `SchedulableSlot`
+3. `BacktrackImproveSlots` — for unscheduled remainders:
+   - Direct placement first (constraints may have relaxed after earlier placements)
+   - If still no slot: displace one non-fixed match, place the current match, re-place the displaced one
+4. `IsForbiddenForMatch` called per match for division-aware forbidden-slot enforcement
+5. Fixed matches are immovable context — included in the result unchanged
+
+#### Routine 4 — Pair Verification (`RestoreMissingPairs`)
+Compares expected pairs (from division config) against `scheduled + unscheduled`. Any missing pair is created and added to `UnscheduledMatches`. Called from `MainViewModel.RunPairCompletionCheck()` after generate. See §16.6.
+
+#### Routine 5 — Hard Scheduling Rule Validation (`VerifySchedule`)
+Checks the finalised schedule for:
+1. Two matches sharing the same `(ground, date, timeslot)`
+2. A team with >1 match on the same weekend
+3. A match on a forbidden slot
+Violations are moved to `UnscheduledMatches` and a `ReschedulePreservingExisting` pass is retried (up to 2×). Called from `RunScheduleVerificationAndRetry()`.
+
+#### Routine 6 — Ground Assignment (`AssignGrounds`) — Phase 5
+Rebalances ground assignments while **keeping date and timeslot fixed**.
+- Clears all non-fixed grounds; fixed match grounds are preserved
+- Sorts matches most-constrained-first (fewest valid candidate grounds)
+- Recursive backtracking: tries grounds in order of lowest combined team-usage (fairness)
+- On failure at any node: backtracks to try the next candidate; if all candidates fail, leaves Ground = null and continues
+- Respects ground-specific forbidden slots
+- Called after Phase 3 (initial generate) and by `RescheduleGroundAndUmpiring`
+
+#### Routine 7 — Umpiring Assignment (`RescheduleUmpiring` / `AssignUmpires`)
+Assigns umpiring teams to non-fixed matches. See §11 for full rules.
+
+#### Routine 8 — Umpiring Rule Validation (`VerifyUmpiring`)
+Checks umpiring assignments against 5 hard rules. Violations cleared and `RescheduleUmpiring` re-run (up to 2×). Called from `RunUmpiringVerificationAndRetry()`.
+
+---
+
+### 8.3 `Generate` Orchestrator (full pipeline)
+
+```
+Phase 1  MatchGenerator.GenerateMatches        → match pairs
+Phase 2  SchedulingMatrixBuilder.BuildSlots     → slot universe (N grounds × M slots × D dates)
+         + IsForbidden global filter
+Phase 3  ScheduleMatchesToSlots                 → date + ground + timeslot assigned
+Phase 4  RestoreMissingPairs                    → any missing pair added to unscheduled
+Phase 5  AssignGrounds                          → ground rebalanced for fairness
+Phase 5v VerifySchedule / retry                 → slot conflict check + auto-correct
+Phase 6  AssignUmpires                          → umpiring assigned
+Phase 6v VerifyUmpiring / retry                 → umpiring rule check + auto-correct
+```
 
 **`ReschedulePreservingExisting`** (called by `Reschedule` button — non-destructive):
 1. Uses all currently scheduled matches (fixed + non-fixed) as starting context
 2. Attempts to place only the `UnscheduledMatches` list into remaining open slots
-3. Runs `BacktrackImprove` if any still unplaceable
+3. Runs `BacktrackImproveSlots` if any still unplaceable
 4. Reassigns umpires for non-fixed matches only; fixed match umpires are preserved unchanged
 
 ### 8.3 Core Scheduling Constraints
@@ -737,9 +819,10 @@ Unscheduled matches appear in the **Unscheduled Matches** grid. Each row has 8 i
 
 - Optional filters on the scheduling matrix
 - Any combination of: Date, Ground, TimeSlot, Division (all nullable)
-- **`IsForbidden`** (global pre-filter, slot matrix build): **skips** entries that have a non-null `Division` field
-- **`IsForbiddenForMatch(slot, divisionName, forbidden)`** (per-match check): checks all four fields including `Division` (null = all divisions wildcard)
-- `IsForbiddenForMatch` is called in `TryScheduleOrdering`, `BacktrackImprove`, `BacktrackReschedule`, and `SuggestMoves`
+- **`IsForbidden`** (Phase 2 global pre-filter): strips slots where the forbidden entry has no `Division` qualifier; division-specific and ground-specific entries are deferred to per-match checks
+- **`IsForbiddenForMatch(slot, divisionName, forbidden)`** (Phase 3 per-match check): checks all four fields — `Date`, `Ground`, `TimeSlot`, `Division` (null = wildcard for any)
+- Ground-specific forbidden slots (`f.GroundName != null`) are respected in both `IsForbiddenForMatch` (Phase 3) and `GroundAssignmentState.CandidateGrounds` (Phase 5/6)
+- `IsForbiddenForMatch` is called in `TrySlotOrdering`, `BacktrackImproveSlots`, `BacktrackReschedule`, and `SuggestMoves`
 - Stored in persistant CSV  `ForbiddenSlots` collection (save with torunament.csv ) loat with tournament open
 - Each slot shows a `Display` string: `Date | Ground | TimeSlot | Division`
 
@@ -769,39 +852,48 @@ Selecting an unscheduled match also triggers `SuggestMoves` → populates `Unsch
 When the Move Analyzer is opened for a *displaced* (affected) match from the unscheduled slot panel, a virtual copy of the unscheduled match is created with its target date/slot/ground and `IsFixed=true`. This is passed as `additionalFixed` to `MoveAnalyzerViewModel` → `SuggestMoves`. Effect:
 - The target slot (where the unscheduled match will be placed) is added to `fixedSlotKeys` and excluded from candidate slots for the displaced match.
 - The unscheduled match's teams participate in the same-weekend conflict check, so the displaced match's suggested slots correctly avoid weekends where the unscheduled match's teams are already committed.
+- When `additionalFixed` is non-null (strict/displaced-match mode): any slot that would cause a non-fixed same-weekend conflict is also hard-filtered out (only constraint-clean slots are suggested).
 - Child-level analyzers (resolving displaced-of-displaced) do NOT receive `additionalFixed` — they only need to find any free slot for the next-level match.
 
-**`RescheduleGroundAndUmpiring` algorithm:**
-1. Seed a `(team, ground) → count` usage table from fixed matches.
-2. For each (date, timeslot) group of non-fixed matches (ordered by date then start time):
-   a. Identify grounds locked by fixed matches in this exact slot.
-   b. From the remaining tournament grounds, assign one ground per match, always picking the ground with the lowest combined usage count for the two playing teams (underused grounds preferred).
-   c. Each ground is consumed once per group — no double-booking within a slot.
-3. After all groups are processed, call `RescheduleUmpiring` to re-assign umpires on the now-updated ground layout.
+**Hard constraint filter in `SuggestMoves`:**
+- Always: slots where a **fixed** match already occupies the team's weekend are filtered out (fixed matches cannot be moved — unresolvable violation).
+- Strict mode (`additionalFixed` non-null): slots where any non-fixed same-weekend conflict exists are also filtered out (so only constraint-clean options are suggested to the user).
+
+**`RescheduleGroundAndUmpiring(league, forbidden?)` algorithm (tree-like, most-constrained first):**
+1. Build `occupied` dict (`"date|HH:mm|groundname" → Match`) seeded from fixed matches; build `(team, ground) → count` usage table seeded from fixed matches.
+2. Sort non-fixed matches by fewest valid candidate slots in their weekend (most constrained first).
+3. For each match:
+   a. Temporarily remove it from `occupied` and decrement its ground-usage counts.
+   b. Scan all tournament slots in the **same weekend** (Sat+Sun pair): skip occupied, forbidden, date-blocked, time-blocked, and slots that would violate 1-per-weekend for either team.
+   c. Score each candidate: `usageTeamOne[ground] + usageTeamTwo[ground] + (5 if different day)`. The day-change penalty discourages moving Sat↔Sun unless it gives meaningfully better balance.
+   d. Assign the lowest-scoring slot. If none found, restore the original assignment.
+4. Call `RescheduleUmpiring` to re-assign umpires on the updated layout.
 
 ---
 
 ## 11. Umpiring
 
-Priority order for `AssignUmpires` (all subject to hard rules):
+Priority order for `AssignUmpires` (all subject to hard rules, soft rule applied within each tier):
 
 | Priority | Criterion |
 |---|---|
 | 1 | Team with a match in **adjacent slot on same date + ground** (physically at the ground) |
-| 2 | Team with **no match in the same calendar week** (ISO week) — least travel burden |
+| 2 | Team with **no match on the same WEEKEND** (Sat+Sun pair) — least travel burden |
 | 3 | Any eligible team with the **lowest umpire load** (fairness fallback) |
-| 4 | 
 
+Within each priority tier: teams that umpired within the last 7 days are deprioritized (soft gap rule), then ties broken by lowest cumulative umpire load.
 
 Hard rules (always enforced):
 - A team **never** umpires its **own division**
 - A team **never** umpires a match it is **playing** (same date + slot, any ground)
 - A team **never** umpires at a ground where it is **not playing that day**
-- A team **never** umpire twice on **same weekend**
-- Max Umpiring Assignments per Team = ceil(Total Matches Played by Team / 2)
-Ties within each priority tier broken by lowest cumulative umpire load.
+- A team **never** umpires more than **once per weekend** (Sat+Sun pair)
+- A team's total umpiring load **never exceeds `ceil(matchesPlaying / 2)`** (e.g. 9 matches → max 5 duties; 8 matches → max 4 duties)
+- Fixed matches' existing umpire assignments are pre-seeded into the load/weekend tracking so they count toward these limits
 
-**`RescheduleUmpiring(League league)`** — public method: clears umpire assignments on non-fixed matches, then calls `AssignUmpires`.
+Export: both `UmpireOne` and `UmpireTwo` CSV columns are set to `match.UmpireOne` (same team name in both boxes).
+
+**`RescheduleUmpiring(League league)`** — public method: clears umpire assignments on non-fixed matches, then calls `AssignUmpires` with the new rules above.
 
 ---
 
@@ -831,14 +923,16 @@ Searches use `StringComparison.OrdinalIgnoreCase` and update in real-time via `U
 
 ## 14. Export
 
-All exports via `ExportService.ExportScheduleAsync`:
+### 14.1 CSV exports
+
+All CSV exports via `ExportService.ExportScheduleAsync`:
 - Full schedule → `data/leagues/{name}/schedule.csv`
 - Filtered schedule → user-chosen path via `SaveFileDialog`
 - Filtered requests → user-chosen path via `SaveFileDialog`
 
 **`IsFixed` persistence:** `ExportService` always writes `IsFixed = m.IsFixed` in the `ScheduleCsv` DTO. `LeagueService` also reads and writes `IsFixed`. Both paths are required — omitting either causes the flag to be silently reset to `false` on the next save.
 
-### Schedule CSV strict format
+#### Schedule CSV strict format
 ```
 #,Series,Division,Match Type,Date,Time,Team One,Team Two,Ground,
 Umpire One,Umpire Two,Umpire Three,Umpire Four,Match Manager,Scorer 1,Scorer 2,IsFixed
@@ -846,6 +940,33 @@ Umpire One,Umpire Two,Umpire Three,Umpire Four,Match Manager,Scorer 1,Scorer 2,I
 - `Date` = `MM/dd/yyyy`
 - `Time` = `h:mm tt`
 - `IsFixed` = `True`/`False`
+
+### 14.2 Combined Excel export (`ExportAllStatisticsToExcel`)
+
+**Triggered by:** "📊 Export All Stats (Excel)" button in the Statistics view header — opens a `SaveFileDialog` (defaults to `outputs/` folder, suggests a timestamped `.xlsx` filename).
+
+**Method:** `ExportService.ExportAllStatisticsToExcel(StatisticsViewModel vm, IEnumerable<Match> scheduledMatches, IEnumerable<Match> unscheduledMatches, string path)` — static, uses `ClosedXML`.
+
+**Workbook structure — 6 sheets in order:**
+
+| Sheet | Header colour | Content |
+|---|---|---|
+| **Schedule** | Green (`#C6EFCE`) | All scheduled matches; columns: `#, Division, Match Type, Date, Time, Team One, Team Two, Ground, Umpire 1–4, Match Manager, Scorer 1–2, Fixed`; sorted by Date → Time → Sequence; fixed-match rows shaded light green |
+| **Unscheduled** | Amber (`#FFEB9C`) | Unscheduled matches; columns: `Division, Match Type, Team One, Team Two, Reason`; sorted by Division → Team One |
+| **Matches Scheduled** | — | Pivot table (all divisions on one sheet, 5 blank rows between divisions) |
+| **Umpiring Schedule** | — | Pivot table (same layout) |
+| **Ground Assignment** | — | Pivot table (same layout) |
+| **Weekly Ground Usage** | — | Pivot table (same layout) |
+
+**Stat sheet layout (per division block):**
+1. Division name row — bold, `LightSteelBlue` background, merged across all columns
+2. Column header row — bold, `LightGray` background, centred
+3. Data rows — `"Total"` row is bold + `LightGray`; non-first columns are centred
+4. 5 blank rows before the next division block
+
+**Code-behind wiring (`StatisticsView.xaml.cs`):**
+- `_mainVm` (`MainViewModel`) cached alongside `_vm` in `OnDataContextChanged`
+- `OnExportAllStatsExcel` extracts `SourceMatch` from `_mainVm.ScheduledMatches` and `Match` from `_mainVm.UnscheduledMatches`, then calls `ExportService.ExportAllStatisticsToExcel`
 
 ---
 
@@ -865,9 +986,9 @@ Umpire One,Umpire Two,Umpire Three,Umpire Four,Match Manager,Scorer 1,Scorer 2,I
 
 | Class | File | Role |
 |---|---|---|
-| `StatisticsViewModel` | `ViewModels/StatisticsViewModel.cs` | Owns the 3 `DataTable` properties; all pivot computation lives here |
-| `StatisticsView` | `Views/StatisticsView.xaml` | 3-sub-tab layout; all DataGrids are `IsReadOnly="True"` with `AutoGenerateColumns="True"` |
-| `StatisticsView` code-behind | `Views/StatisticsView.xaml.cs` | Wires `DataGrid.ItemsSource` to `DataTable.DefaultView`; handles column/row styling events |
+| `StatisticsViewModel` | `ViewModels/StatisticsViewModel.cs` | Owns the 4 `List<DivisionStatTable>` properties; all pivot computation lives here |
+| `StatisticsView` | `Views/StatisticsView.xaml` | 4-sub-tab layout; panels built dynamically in code-behind from `DivisionStatTable` lists |
+| `StatisticsView` code-behind | `Views/StatisticsView.xaml.cs` | Subscribes to `StatisticsViewModel.PropertyChanged`; calls `BuildPanels` to create one `DataGrid` per division/table entry; handles column widths, header styles, and total-row styling |
 
 `StatisticsViewModel` is a plain `ObservableObject`; it is **not** registered in the DI container. `MainViewModel` owns the single instance:
 
@@ -889,61 +1010,82 @@ public StatisticsViewModel StatisticsVM { get; } = new();
 ```csharp
 public partial class StatisticsViewModel : ObservableObject
 {
-    [ObservableProperty] DataTable? matchesScheduledTable;
-    [ObservableProperty] DataTable? umpiringScheduleTable;
-    [ObservableProperty] DataTable? groundAssignmentTable;
+    [ObservableProperty] List<DivisionStatTable> matchesByDivision       = [];
+    [ObservableProperty] List<DivisionStatTable> umpiringByDivision      = [];
+    [ObservableProperty] List<DivisionStatTable> groundByDivision        = [];
+    [ObservableProperty] List<DivisionStatTable> matchesPerWeekPerGround = [];  // single "All Divisions" entry
 
     public void RefreshStatistics(IEnumerable<Match> matches);
-    public void Clear();  // sets all three tables to null
+    public void Clear();  // resets all four lists to []
+    public static string ExportTableToCsv(DataTable table, string prefix, string divisionName);
+}
+
+public sealed class DivisionStatTable
+{
+    public string    DivisionName { get; init; }
+    public DataTable Table        { get; init; }
 }
 ```
 
-`RefreshStatistics` filters out unscheduled matches (`m.Date == null`) before building any pivot. All three `DataTable` properties are assigned atomically (separate assignments that each fire `PropertyChanged`).
+`RefreshStatistics` filters out unscheduled matches (`!m.Date.HasValue`) before building any pivot. Each of the four list properties is assigned as a whole new list (fires `PropertyChanged` once per property). `matchesPerWeekPerGround` always contains exactly one `DivisionStatTable` entry with `DivisionName = "All Divisions"` aggregating all divisions.
 
 ### 16.4 DataTable Schema
 
-All three tables follow the same column-naming convention:
-
-| Position | Column name | Type |
-|---|---|---|
-| First | `"Team"` | `string` |
-| Middle (1…N) | Dynamic — date `"MM/dd"` or ground name | `int` |
-| Last | `"Total"` | `int` |
-
-The last row in every table has `"Team"` = `"Total"`.
+Tables 1–3 use `"Team"` as the first column; table 4 uses `"Ground"`. All tables end with a `"Total"` column and a `"Total"` last row. The code-behind detects which variant a table is by checking `table.Columns.Contains("Team")` vs `"Ground"`.
 
 **Matches Scheduled table** — columns: `Team`, one `MM/dd` per unique date (ascending), `Total`
-- Team-date cell = `1` if team plays on that date, `0` otherwise
-- Total column = sum of 1s in the row (number of dates the team has a match)
-- Total row = `matches.Count(m => m.Date == date)` per date (match count, not team count); Total-row Total = overall scheduled-match count
+- Team-date cell = `"1"` if team plays on that date, `"·"` otherwise
+- Total column = count of dates the team has a match
+- Total row = `matches.Count(m => m.Date == date)` per date; Total-row Total = overall scheduled-match count
 
-**Umpiring Schedule table** — same date columns
-- Team-date cell = `1` if team appears in any of `UmpireOne`–`UmpireFour` on that date, `0` otherwise
-- Total column = number of dates on which the team has umpiring duty
-- Total row = number of distinct teams with at least one umpiring assignment on each date; Total-row Total = sum across all dates
+**Umpiring Schedule table** — same date columns as Matches Scheduled (all match dates, not just division dates)
+- Team-date cell = `"1"` if team appears in any of `UmpireOne`–`UmpireFour` on that date, `"·"` otherwise
+- Total column = number of dates the team has umpiring duty
+- Total row = number of teams with at least one umpiring assignment on each date; Total-row Total = sum across all dates
 
 **Ground Assignment table** — columns: `Team`, one column per unique ground name (ascending), `Total`
-- Cell = count of matches where team is `TeamOne` or `TeamTwo` at that ground (integer, not binary)
+- Cell = count of matches where team is `TeamOne` or `TeamTwo` at that ground (integer string, not binary)
 - Total column = total matches for the team across all grounds
 - Total row = `matches.Count(m => m.Ground?.Name == ground)` per ground; Total-row Total = overall count
 
+**Weekly Ground Usage table** — columns: `Ground`, one `MM/dd` week-start (Monday) per week (ascending), `Total`
+- Week-start computed by `GetWeekStart(date)`: `date.AddDays(-((date.DayOfWeek - DayOfWeek.Monday + 7) % 7))`
+- Ground-week cell = count of matches at that ground in the Mon–Sun window; `"·"` if zero
+- Total column = total matches at the ground across all weeks
+- Total row = matches across all grounds per week (numeric string, never `"·"`); Total-row Total = overall count
+- Single `DivisionStatTable` entry with `DivisionName = "All Divisions"` (cross-division aggregate)
+
 ### 16.5 View and Code-Behind
 
-**`StatisticsView.xaml`** — three `TabItem`s (`Matches Scheduled`, `Umpiring Schedule`, `Ground Assignment`), each containing:
-- A single-line description `TextBlock` explaining the grid semantics
-- A `DataGrid` named `MatchesGrid` / `UmpiringGrid` / `GroundGrid` with `AutoGenerateColumns="True"`, `IsReadOnly="True"`, `CanUserAddRows="False"`, `CanUserDeleteRows="False"`, `CanUserReorderColumns="False"`, both scroll bars on `Auto`
-- All three grids share the same `AutoGeneratingColumn` and `LoadingRow` event handlers
+**`StatisticsView.xaml`** — header bar + four `TabItem`s (`Matches Scheduled`, `Umpiring Schedule`, `Ground Assignment`, `Weekly Ground Usage`):
+- **Header bar** (`Border`, `#F5F5F5`) — contains a `DockPanel` with "Schedule Statistics" label and a **"📊 Export All Stats (Excel)"** button (`ExportAllStatsExcelBtn`, right-docked) that exports the combined `.xlsx` workbook
+- Each tab contains:
+  - A description `TextBlock` explaining the grid semantics
+  - A named `StackPanel` (`MatchesPanel` / `UmpiringPanel` / `GroundPanel` / `WeeklyGroundPanel`) inside a `ScrollViewer`
+  - An **Export All** button (`ExportAllMatchesBtn` / `ExportAllUmpiringBtn` / `ExportAllGroundBtn` / `ExportAllWeeklyGroundBtn`) that exports that category to individual CSVs via `StatisticsViewModel.ExportTableToCsv`
 
 **`StatisticsView.xaml.cs`** — key responsibilities:
-1. `DataContextChanged` → caches `MainViewModel.StatisticsVM` as `_vm`; subscribes to `_vm.PropertyChanged`; calls `RefreshAllGrids()`
-2. `OnVmPropertyChanged` → maps property name to the matching `DataGrid.ItemsSource = table?.DefaultView`
-3. `Grid_AutoGeneratingColumn` — sets column widths: `"Team"` = 130 px, `"Total"` = 55 px, all date/ground columns = 52 px; applies `TotalHeaderStyle` (bold, grey background) to `"Total"` column
-4. `Grid_LoadingRow` — if `drv["Team"] == "Total"`: sets `FontWeight=Bold`, `Background=#DCDCDC`; otherwise resets to `Normal` / `Transparent` (reset required because WPF virtualises and reuses row containers)
+1. `DataContextChanged` → caches `MainViewModel` as `_mainVm` and `MainViewModel.StatisticsVM` as `_vm`; subscribes to `_vm.PropertyChanged`; calls `RefreshAll()`
+2. `OnVmPropertyChanged` → dispatches to `BuildPanels(panel, tables, prefix)` for the changed property
+3. `RefreshAll()` → calls `BuildPanels` for all four panels
+4. `BuildPanels(StackPanel, List<DivisionStatTable>, string prefix)` — clears the panel and rebuilds: one `TextBlock` header + one `DataGrid` per `DivisionStatTable` entry. DataGrids use `AutoGenerateColumns=false`; columns built by `BuildColumns`.
+5. `BuildColumns(DataGrid, DataTable)` — creates one `DataGridTemplateColumn` per DataTable column using `FrameworkElementFactory`:
+   - First column (`"Team"` or `"Ground"`): width 150, left-aligned, `TeamHeaderStyle`
+   - `"Total"` column: width 55, center-aligned, `TotalHeaderStyle` (bold, grey background)
+   - All other columns: width 50, center-aligned
+   - `Foreground` set as a **local value** via `factory.SetValue` so it beats all WPF theme overrides
+   - Binding: `new Binding($"[{columnName}]")` (DataRowView bracket indexer)
+6. `OnLoadingRow` — checks `drv["Team"]` or `drv["Ground"]` for `"Total"`: sets `FontWeight=Bold`, `Background=#DCDCDC`; otherwise resets to `Normal` / `Transparent` (reset required — WPF virtualises and reuses row containers)
+7. Per-tab export buttons wired in constructor: `ExportAll(_vm?.MatchesByDivision, "matches")` etc.; per-division `Export` button added inline in `BuildPanels`
+8. `OnExportAllStatsExcel` — opens `SaveFileDialog`, extracts `SourceMatch` from `_mainVm.ScheduledMatches` and `Match` from `_mainVm.UnscheduledMatches`, calls `ExportService.ExportAllStatisticsToExcel`
 
 ### 16.6 Constraints and Edge Cases
 
-- **No matches loaded:** all three DataTables are `null`; grids show empty (no columns, no rows)
-- **Date column uniqueness:** `MM/dd` format is used for column names. For single-season tournaments this is collision-free. If two matches fall on the same calendar date, there is only one column (they are the same date — no collision).
+- **No matches loaded:** all four `List<DivisionStatTable>` properties are `[]`; `BuildPanels` returns immediately leaving the panel empty.
+- **Date column uniqueness:** `MM/dd` format is used for column names. For single-season tournaments this is collision-free. Two matches on the same calendar date produce one column (same date — no collision). Multi-year leagues could theoretically collide; out of scope for single-season use.
+- **Week column uniqueness:** `GetWeekStart` returns the Monday `MM/dd`; within one season each Monday is unique so no DataTable `DuplicateNameException` arises.
 - **Ground column uniqueness:** ground names are used directly as DataTable column names. Ground names must be unique (enforced at tournament setup level).
-- **`DataTable` is not thread-safe:** `RefreshStatistics` is always called from the UI thread (it is invoked at the end of `RenderSchedule`, which runs on the dispatcher thread). No locking is needed.
-- **Row container recycling:** WPF DataGrid virtualises rows. The `LoadingRow` handler must always set both the "Total" style and the normal-row reset path to avoid stale bold/grey rendering on recycled containers.
+- **`DataTable` is not thread-safe:** `RefreshStatistics` is always called from the UI thread (invoked at the end of `RenderSchedule`, which runs on the dispatcher thread). No locking needed.
+- **Row container recycling:** WPF DataGrid virtualises rows. The `OnLoadingRow` handler always sets both the "Total" style **and** the normal-row reset path to avoid stale bold/grey on recycled containers.
+- **First-column detection:** `BuildColumns` checks `name == "Team" || name == "Ground"` to identify the row-label column, allowing the same method to handle both team-pivot tables and the ground-pivot table.
+- **Duplicate match pairs in fixed-pairing divisions:** `GenerateSchedule` saves per-match relaxation flags using a 4-tuple key `(TeamOne, TeamTwo, Division, int occurrenceIndex)`. The occurrence index increments each time the same triple appears in `UnscheduledMatches`, so two KC Rockers vs Pirates matches in Div A get keys `(..., 0)` and `(..., 1)` respectively. The same index-counting logic is applied when looking up relaxations in the backtrack step and when restoring them after generate.
