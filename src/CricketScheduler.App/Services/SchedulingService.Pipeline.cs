@@ -235,14 +235,18 @@ public sealed partial class SchedulingService
     /// Uses recursive backtracking ordered by most-constrained match first.
     /// Fixed match grounds are never touched.
     /// </summary>
-    public void AssignGrounds(League league, List<ForbiddenSlot>? forbidden = null)
+    public void AssignGrounds(League league, List<ForbiddenSlot>? forbidden = null,
+        IReadOnlyCollection<Match>? targetMatches = null)
     {
         forbidden ??= [];
 
         var fixedMatches = league.Matches.Where(m => m.IsFixed).ToList();
-        var nonFixed     = league.Matches
-            .Where(m => !m.IsFixed && m.Date is not null && m.Slot is not null)
-            .ToList();
+
+        // When targetMatches is supplied, only those non-fixed matches get reassigned.
+        // All other non-fixed matches keep their current ground and are treated as occupied context.
+        List<Match> toAssign = targetMatches is null
+            ? league.Matches.Where(m => !m.IsFixed && m.Date is not null && m.Slot is not null).ToList()
+            : targetMatches.Where(m => !m.IsFixed && m.Date is not null && m.Slot is not null).ToList();
 
         var state = new GroundAssignmentState(league.Tournament.Grounds, forbidden);
 
@@ -254,11 +258,25 @@ public sealed partial class SchedulingService
             state.Inc(m.TeamTwo, m.Ground.Name);
         }
 
-        // Clear existing ground assignments on non-fixed matches (full rebalance).
-        foreach (var m in nonFixed) m.Ground = null;
+        // In partial mode, also seed from non-target non-fixed matches so they block their slots.
+        if (targetMatches is not null)
+        {
+            var targetSet = new HashSet<Match>(targetMatches, ReferenceEqualityComparer.Instance);
+            foreach (var m in league.Matches.Where(m =>
+                !m.IsFixed && !targetSet.Contains(m) &&
+                m.Ground is not null && m.Date is not null && m.Slot is not null))
+            {
+                state.SetOccupied(m.Date!.Value, m.Slot!.Start, m.Ground!.Name);
+                state.Inc(m.TeamOne, m.Ground.Name);
+                state.Inc(m.TeamTwo, m.Ground.Name);
+            }
+        }
+
+        // Clear existing ground assignments on target matches only.
+        foreach (var m in toAssign) m.Ground = null;
 
         // Sort: most-constrained first (fewest valid ground candidates).
-        var sorted = nonFixed
+        var sorted = toAssign
             .OrderBy(m => state.CandidateGrounds(m, m.DivisionName).Count)
             .ThenByDescending(m => league.Constraints.Count(c =>
                 string.Equals(c.TeamName, m.TeamOne, StringComparison.OrdinalIgnoreCase) ||

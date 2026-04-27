@@ -755,12 +755,27 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task ExportSchedule()
+    private async Task ExportSchedule(DataGrid? grid)
     {
         if (CurrentLeague is null) return;
-        // Always write to a timestamped file in /outputs — never overwrite data folder
+        // Apply grid sort order to the full (unfiltered) match list so the export
+        // reflects whatever column sort the user has active.
+        IEnumerable<Match> matches;
+        if (grid is not null && grid.Items.SortDescriptions.Count > 0)
+        {
+            var view = new System.Windows.Data.ListCollectionView(ScheduledMatches.ToList());
+            foreach (var sd in grid.Items.SortDescriptions)
+                view.SortDescriptions.Add(sd);
+            matches = view.OfType<ScheduleRowViewModel>()
+                .Where(r => r.SourceMatch is not null)
+                .Select(r => r.SourceMatch!);
+        }
+        else
+        {
+            matches = CurrentLeague.Matches;
+        }
         var output = AppPaths.TimestampedExportPath($"schedule_{CurrentLeague.Name}");
-        await _exportService.ExportScheduleAsync(CurrentLeague.Matches, output);
+        await _exportService.ExportScheduleAsync(matches, output);
         StatusMessage = $"Exported to: {System.IO.Path.GetFileName(output)}";
         MessageBox.Show($"Exported to:\n{output}", "Export Complete");
     }
@@ -1014,12 +1029,31 @@ public partial class MainViewModel : ObservableObject
     // ─────────────────────────────────────────────────────────────────────────
 
     [RelayCommand]
-    private async Task Reschedule()
+    private async Task Reschedule(DataGrid? grid)
     {
         if (CurrentLeague is null) { MessageBox.Show("Open a league first."); return; }
 
         CurrentLeague.Divisions = Divisions.ToList();
         CurrentLeague.Constraints = SchedulingRequests.Select(r => r.Request).ToList();
+
+        // When >1 rows are selected, move only those non-fixed matches to unscheduled so the
+        // engine can find better slots for them while leaving all other matches in place.
+        var allSelected = grid?.SelectedItems.OfType<ScheduleRowViewModel>().ToList() ?? [];
+        if (allSelected.Count > 1)
+        {
+            var toMove = allSelected
+                .Where(r => r.SourceMatch is not null && !r.SourceMatch.IsFixed)
+                .Select(r => r.SourceMatch!)
+                .ToList();
+            foreach (var m in toMove)
+            {
+                CurrentLeague.Matches.Remove(m);
+                m.Date = null; m.Slot = null; m.Ground = null;
+                m.UmpireOne = null; m.UmpireTwo = null;
+                m.UnscheduledReason = "Selected for reschedule";
+                CurrentLeague.UnscheduledMatches.Add(m);
+            }
+        }
 
         // Non-destructive reschedule: all currently scheduled matches (fixed + non-fixed)
         // stay in their slots as the starting context. Only the unscheduled matches are newly
@@ -1118,16 +1152,24 @@ public partial class MainViewModel : ObservableObject
     /// Fixed matches retain their existing umpire assignments unchanged.
     /// </summary>
     [RelayCommand]
-    private async Task RescheduleUmpiring()
+    private async Task RescheduleUmpiring(DataGrid? grid)
     {
         if (CurrentLeague is null) { StatusMessage = "Open a league first."; return; }
 
-        _schedulingService.RescheduleUmpiring(CurrentLeague);
+        var allSelected = grid?.SelectedItems.OfType<ScheduleRowViewModel>().ToList() ?? [];
+        List<Match>? targetMatches = allSelected.Count > 1
+            ? allSelected.Where(r => r.SourceMatch is not null && !r.SourceMatch.IsFixed)
+                         .Select(r => r.SourceMatch!).ToList()
+            : null;
+
+        _schedulingService.RescheduleUmpiring(CurrentLeague, targetMatches);
 
         await _leagueService.SaveLeagueAsync(CurrentLeague);
         RenderSchedule();
-        StatusMessage = $"Umpiring rescheduled for {CurrentLeague.Matches.Count(m => !m.IsFixed)} matches " +
-                        $"({CurrentLeague.Matches.Count(m => m.IsFixed)} fixed preserved).";
+        StatusMessage = targetMatches is not null
+            ? $"Umpiring rescheduled for {targetMatches.Count} selected non-fixed match(es)."
+            : $"Umpiring rescheduled for {CurrentLeague.Matches.Count(m => !m.IsFixed)} matches " +
+              $"({CurrentLeague.Matches.Count(m => m.IsFixed)} fixed preserved).";
     }
 
     /// <summary>
@@ -1136,11 +1178,17 @@ public partial class MainViewModel : ObservableObject
     /// Hard constraint: no two matches share the same ground + date + time slot.
     /// </summary>
     [RelayCommand]
-    private async Task RescheduleGroundAndUmpiring()
+    private async Task RescheduleGroundAndUmpiring(DataGrid? grid)
     {
         if (CurrentLeague is null) { StatusMessage = "Open a league first."; return; }
 
-        _schedulingService.RescheduleGroundAndUmpiring(CurrentLeague, ForbiddenSlots.ToList());
+        var allSelected = grid?.SelectedItems.OfType<ScheduleRowViewModel>().ToList() ?? [];
+        List<Match>? targetMatches = allSelected.Count > 1
+            ? allSelected.Where(r => r.SourceMatch is not null && !r.SourceMatch.IsFixed)
+                         .Select(r => r.SourceMatch!).ToList()
+            : null;
+
+        _schedulingService.RescheduleGroundAndUmpiring(CurrentLeague, ForbiddenSlots.ToList(), targetMatches);
 
         // Verify schedule integrity; retry (up to 2×) if violations are found.
         int schedViolations    = RunScheduleVerificationAndRetry();
@@ -1154,10 +1202,12 @@ public partial class MainViewModel : ObservableObject
             .Select(m => (m, m.UnscheduledReason ?? "Unscheduled"))
             .ToList<(Match Match, string Reason)>());
 
-        int nonFixed = CurrentLeague.Matches.Count(m => !m.IsFixed);
-        int fixed_   = CurrentLeague.Matches.Count(m => m.IsFixed);
-        var sb = new System.Text.StringBuilder(
-            $"Ground & umpiring rescheduled for {nonFixed} non-fixed matches ({fixed_} fixed preserved).");
+        var sb = targetMatches is not null
+            ? new System.Text.StringBuilder(
+                $"Ground & umpiring rescheduled for {targetMatches.Count} selected non-fixed match(es).")
+            : new System.Text.StringBuilder(
+                $"Ground & umpiring rescheduled for {CurrentLeague.Matches.Count(m => !m.IsFixed)} non-fixed matches " +
+                $"({CurrentLeague.Matches.Count(m => m.IsFixed)} fixed preserved).");
         if (schedViolations    > 0) sb.Append($" {schedViolations} scheduling violation(s) auto-corrected.");
         if (umpiringViolations > 0) sb.Append($" {umpiringViolations} umpiring violation(s) auto-corrected.");
         StatusMessage = sb.ToString();
@@ -1337,16 +1387,21 @@ public partial class MainViewModel : ObservableObject
     // ─────────────────────────────────────────────────────────────────────────
 
     [RelayCommand]
-    private async Task ExportFilteredSchedule()
+    private async Task ExportFilteredSchedule(DataGrid? grid)
     {
         if (!FilteredScheduledMatches.Any()) { StatusMessage = "No matches to export."; return; }
-        var matches = FilteredScheduledMatches
-            .Where(r => r.SourceMatch is not null)
-            .Select(r => r.SourceMatch!)
-            .ToList();
+        // grid.Items already reflects the active sort + filter, so iterate it directly.
+        IEnumerable<Match> matches = grid is not null
+            ? grid.Items.OfType<ScheduleRowViewModel>()
+                .Where(r => r.SourceMatch is not null)
+                .Select(r => r.SourceMatch!)
+            : FilteredScheduledMatches
+                .Where(r => r.SourceMatch is not null)
+                .Select(r => r.SourceMatch!);
+        var matchList = matches.ToList();
         var output = AppPaths.TimestampedExportPath($"schedule_filtered_{CurrentLeague?.Name ?? "export"}");
-        await _exportService.ExportScheduleAsync(matches, output);
-        StatusMessage = $"Exported {matches.Count} matches to: {System.IO.Path.GetFileName(output)}";
+        await _exportService.ExportScheduleAsync(matchList, output);
+        StatusMessage = $"Exported {matchList.Count} matches to: {System.IO.Path.GetFileName(output)}";
         MessageBox.Show($"Exported to:\n{output}", "Export Complete");
     }
 

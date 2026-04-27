@@ -361,9 +361,9 @@ MatchesPerTeam > (n - 1)
 **Toolbar row 1 — Schedule actions:**
 - **💾 Save Schedule** — syncs in-memory state to `schedule.csv` + `unscheduled.csv` without regenerating
 - **Generate** — fresh schedule from scratch (all matches)
-- **Reschedule** — re-runs engine preserving fixed matches and forbidden slots
-- **Export All** — exports full schedule to `schedule.csv`
-- **Export Filtered** — exports only currently visible rows
+- **Reschedule** — re-runs engine preserving fixed matches and forbidden slots. **Selection mode** (>1 rows selected): moves selected non-fixed matches to unscheduled, then runs `ReschedulePreservingExisting` to find new slots for them only; all other matches stay in place. Takes `DataGrid?` as `CommandParameter`.
+- **Export All** — exports full schedule in the **current grid sort order** (passes `MatchGrid` as `CommandParameter`; uses `ListCollectionView` with the grid's `SortDescriptions` to sort all `ScheduledMatches`)
+- **Export Filtered** — exports only currently visible rows in the **current grid sort order** (iterates `grid.Items` directly, which already reflects both filter and sort)
 - **Import Matches** — overlay existing match data
 - **Toggle Fixed** — marks/unmarks all selected rows as fixed (green row = fixed)
 - **📤 Unschedule** — removes selected scheduled matches back to the Unscheduled grid (clears Date/Slot/Ground, sets `UnscheduledReason = "Manually unscheduled"`)
@@ -371,8 +371,8 @@ MatchesPerTeam > (n - 1)
 - **Paste** — duplicates clipboard matches as new entries
 - **Delete Selected** — removes multiple matches at once
 - **Analyze Move** — opens Move Analyzer window for selected match
-- **🧑‍⚖️ Reschedule Umpiring** — clears and reassigns umpires on all non-fixed matches using priority rules
-- **🏟 Reschedule Ground & Umpiring** — reshuffles ground assignments for all non-fixed matches to balance usage, then re-runs umpiring; fixed matches fully preserved
+- **🧑‍⚖️ Reschedule Umpiring** — clears and reassigns umpires using priority rules. **Selection mode** (>1 rows selected): clears/reassigns only selected non-fixed matches; all other non-fixed matches keep their umpires (pre-seeded as context). Takes `DataGrid?` as `CommandParameter`.
+- **🏟 Reschedule Ground & Umpiring** — reshuffles ground assignments then re-runs umpiring; fixed matches fully preserved. **Selection mode** (>1 rows selected): only selected non-fixed matches have their grounds cleared and reassigned; all others are treated as occupied context. Takes `DataGrid?` as `CommandParameter`.
 - Schedule stats label (e.g. "23 of 28 matches shown")
 
 **Filter / search bar:**
@@ -584,9 +584,10 @@ string? ManualScheduleTimeSlot, ManualScheduleGround, ManualScheduleUmpire
 | `DeleteSelectedRequests` | Multi-row delete (takes `DataGrid` parameter) |
 | `SaveSchedule` | Syncs `CurrentLeague.Matches` from `ScheduledMatches`, saves without regenerating |
 | `GenerateSchedule` | Fresh schedule; pre-generates fixed-mode pairings if absent; passes `CurrentLeague.Matches.Where(m => m.IsFixed)` so fixed matches survive unchanged. Saves relaxation flags before generate using a `(TeamOne, TeamTwo, Division, int occurrenceIndex)` 4-tuple key so duplicate match pairs (same teams in a fixed-pairing division) each get a distinct entry. Runs `RunScheduleVerificationAndRetry` + `RunUmpiringVerificationAndRetry` after generate. |
-| `Reschedule` | Non-destructive: calls `ReschedulePreservingExisting` — keeps all currently scheduled matches as context, only places `UnscheduledMatches`; fixed match umpires/slots preserved |
-| `RescheduleUmpiring` | Clears umpires on non-fixed matches, reassigns using priority rules, saves |
-| `ExportSchedule / ExportFilteredSchedule` | CSV export (all / filtered) |
+| `Reschedule` | Takes `DataGrid?` (`CommandParameter=MatchGrid`). Full mode (0–1 selected): non-destructive `ReschedulePreservingExisting` — places only `UnscheduledMatches`. Selection mode (>1 selected): moves selected non-fixed matches to unscheduled then reschedules them; fixed matches always preserved. |
+| `RescheduleUmpiring` | Takes `DataGrid?`. Full mode: clears and reassigns umpires on all non-fixed matches. Selection mode (>1 selected): clears/reassigns only selected non-fixed matches; non-selected non-fixed umpires pre-seeded as context load. |
+| `ExportSchedule` | Takes `DataGrid?`. Exports all `ScheduledMatches` in grid sort order: applies `grid.Items.SortDescriptions` to a `ListCollectionView` over the full list; falls back to insertion order when no sort is active. |
+| `ExportFilteredSchedule` | Takes `DataGrid?`. Exports currently filtered matches in grid sort order by iterating `grid.Items` directly (already sorted + filtered by WPF). |
 | `ImportMatches` | Overlay existing matches |
 | `ToggleFixedSelected` | Toggle IsFixed on all selected rows |
 | `UnscheduleSelectedMatches` | Move selected scheduled matches to unscheduled grid (takes `DataGrid` parameter) |
@@ -595,7 +596,7 @@ string? ManualScheduleTimeSlot, ManualScheduleGround, ManualScheduleUmpire
 | `AddForbiddenSlot / Remove` | Manages forbidden slot list |
 | `AnalyzeMove` | Opens `MoveAnalyzerWindow`; after `DialogResult==true`, awaits `FinaliseMove()` |
 | `OpenRescheduleAnalyzer` | Open Move Analyzer for the selected unscheduled match; on commit calls `FinaliseMove` + `SyncUnscheduledGrid` |
-| `RescheduleGroundAndUmpiring` | Balance ground assignments across all non-fixed matches (greedy per date+slot group), then re-run umpiring; fixed matches untouched |
+| `RescheduleGroundAndUmpiring` | Takes `DataGrid?`. Full mode: rebalances ground assignments across all non-fixed matches via `AssignGrounds`, then re-runs umpiring; fixed matches untouched. Selection mode (>1 selected): only selected non-fixed matches get new grounds; non-target matches seeded as occupied context. |
 | `ClearFilters` | Resets all three filter dropdowns |
 
 ### WPF Binding rules
@@ -743,8 +744,10 @@ Violations are moved to `UnscheduledMatches` and a `ReschedulePreservingExisting
 
 #### Routine 6 — Ground Assignment (`AssignGrounds`) — Phase 5
 Rebalances ground assignments while **keeping date and timeslot fixed**.
-- Clears all non-fixed grounds; fixed match grounds are preserved
-- Sorts matches most-constrained-first (fewest valid candidate grounds)
+Signature: `AssignGrounds(League league, List<ForbiddenSlot>? forbidden = null, IReadOnlyCollection<Match>? targetMatches = null)`
+- **Full mode** (`targetMatches = null`): clears all non-fixed grounds and reassigns them; fixed match grounds are preserved
+- **Partial mode** (`targetMatches` supplied): only the specified non-fixed matches have their grounds cleared and reassigned; all other non-fixed matches keep their current ground and are seeded into `GroundAssignmentState` as occupied context (same as fixed matches)
+- Sorts target matches most-constrained-first (fewest valid candidate grounds)
 - Recursive backtracking: tries grounds in order of lowest combined team-usage (fairness)
 - On failure at any node: backtracks to try the next candidate; if all candidates fail, leaves Ground = null and continues
 - Respects ground-specific forbidden slots
@@ -752,6 +755,10 @@ Rebalances ground assignments while **keeping date and timeslot fixed**.
 
 #### Routine 7 — Umpiring Assignment (`RescheduleUmpiring` / `AssignUmpires`)
 Assigns umpiring teams to non-fixed matches. See §11 for full rules.
+`RescheduleUmpiring` signature: `RescheduleUmpiring(League league, IReadOnlyCollection<Match>? targetMatches = null)`
+- **Full mode** (`targetMatches = null`): clears and reassigns umpires on all non-fixed matches
+- **Partial mode** (`targetMatches` supplied): clears and reassigns only the specified non-fixed matches; non-target matches (both fixed and non-fixed) that already have umpire assignments are pre-seeded into the tracking state so their load and weekend limits count correctly
+- `AssignUmpires` pre-seeding: seeds from all matches **not in** `matchesToUmpire` that have a non-null `UmpireOne` (previously seeded from fixed-only); this makes partial umpire reassignment load-aware of already-assigned non-fixed matches
 
 #### Routine 8 — Umpiring Rule Validation (`VerifyUmpiring`)
 Checks umpiring assignments against 5 hard rules. Violations cleared and `RescheduleUmpiring` re-run (up to 2×). Called from `RunUmpiringVerificationAndRetry()`.
@@ -859,15 +866,16 @@ When the Move Analyzer is opened for a *displaced* (affected) match from the uns
 - Always: slots where a **fixed** match already occupies the team's weekend are filtered out (fixed matches cannot be moved — unresolvable violation).
 - Strict mode (`additionalFixed` non-null): slots where any non-fixed same-weekend conflict exists are also filtered out (so only constraint-clean options are suggested to the user).
 
-**`RescheduleGroundAndUmpiring(league, forbidden?)` algorithm (tree-like, most-constrained first):**
-1. Build `occupied` dict (`"date|HH:mm|groundname" → Match`) seeded from fixed matches; build `(team, ground) → count` usage table seeded from fixed matches.
-2. Sort non-fixed matches by fewest valid candidate slots in their weekend (most constrained first).
-3. For each match:
-   a. Temporarily remove it from `occupied` and decrement its ground-usage counts.
-   b. Scan all tournament slots in the **same weekend** (Sat+Sun pair): skip occupied, forbidden, date-blocked, time-blocked, and slots that would violate 1-per-weekend for either team.
-   c. Score each candidate: `usageTeamOne[ground] + usageTeamTwo[ground] + (5 if different day)`. The day-change penalty discourages moving Sat↔Sun unless it gives meaningfully better balance.
-   d. Assign the lowest-scoring slot. If none found, restore the original assignment.
-4. Call `RescheduleUmpiring` to re-assign umpires on the updated layout.
+**`RescheduleGroundAndUmpiring(league, forbidden?, targetMatches?)` algorithm:**
+Delegates to `AssignGrounds(league, forbidden, targetMatches)` (Phase 5 pipeline) followed by `RescheduleUmpiring(league, targetMatches)`.
+- **Full mode** (`targetMatches = null`): all non-fixed matches are rebalanced across grounds, then umpires are fully reassigned
+- **Partial mode** (`targetMatches` supplied): only specified non-fixed matches have grounds cleared and reassigned; non-target matches block their slots as occupied context; umpires cleared and reassigned only for the same target set
+
+`AssignGrounds` — Phase 5 backtracking algorithm (most-constrained first):
+1. Seed `GroundAssignmentState` from fixed matches. In partial mode, also seed from non-target non-fixed matches (they retain their ground).
+2. Clear ground on target matches only.
+3. Sort target matches most-constrained-first (fewest valid candidate grounds).
+4. Recursive backtracking: for each match try grounds in order of lowest combined team-usage; backtrack on conflict; leave Ground = null if all candidates fail.
 
 ---
 
@@ -893,7 +901,9 @@ Hard rules (always enforced):
 
 Export: both `UmpireOne` and `UmpireTwo` CSV columns are set to `match.UmpireOne` (same team name in both boxes).
 
-**`RescheduleUmpiring(League league)`** — public method: clears umpire assignments on non-fixed matches, then calls `AssignUmpires` with the new rules above.
+**`RescheduleUmpiring(League league, IReadOnlyCollection<Match>? targetMatches = null)`** — public method:
+- **Full mode**: clears umpire assignments on all non-fixed matches, then calls `AssignUmpires`
+- **Partial mode** (`targetMatches` supplied): clears umpires only on target non-fixed matches; `AssignUmpires` pre-seeds tracking from all other matches (fixed + non-target non-fixed) that already have umpire assignments, so their load counts toward caps and weekend limits
 
 ---
 
@@ -905,7 +915,8 @@ Export: both `UmpireOne` and `UmpireTwo` CSV columns are set to `match.UmpireOne
 | Delete selected | Toolbar button passes `DataGrid` reference via `CommandParameter` |
 | Copy matches | Stores selected `ScheduleRowViewModel` list in `_clipboard` |
 | Paste matches | Clones each `SourceMatch`, assigns new sequence number |
-| Export filtered | Saves only `FilteredRequests` or `FilteredScheduledMatches` |
+| Export filtered | Saves only visible rows in current grid sort order (`grid.Items` already reflects sort + filter) |
+| Export all | Saves all scheduled matches in current grid sort order (applies `grid.Items.SortDescriptions` to a `ListCollectionView` over `ScheduledMatches`) |
 
 ---
 

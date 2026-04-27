@@ -405,22 +405,25 @@ public sealed partial class SchedulingService
     }
 
     /// <summary>
-    /// Public entry point: re-assigns umpires for all non-fixed matches while
-    /// preserving umpire assignments on fixed matches.
+    /// Public entry point: re-assigns umpires for non-fixed matches while preserving fixed match umpires.
+    /// When <paramref name="targetMatches"/> is supplied, only those non-fixed matches are cleared
+    /// and reassigned; all other matches (including non-fixed ones) keep their current assignments
+    /// and are pre-seeded into the tracking state so their load counts correctly.
     /// </summary>
-    public void RescheduleUmpiring(League league)
+    public void RescheduleUmpiring(League league, IReadOnlyCollection<Match>? targetMatches = null)
     {
-        var fixedMatches    = league.Matches.Where(m => m.IsFixed).ToList();
-        var nonFixedMatches = league.Matches.Where(m => !m.IsFixed).ToList();
+        var toUmpire = targetMatches is null
+            ? league.Matches.Where(m => !m.IsFixed).ToList()
+            : targetMatches.Where(m => !m.IsFixed).ToList();
 
-        // Clear umpires on non-fixed matches before re-assigning
-        foreach (var m in nonFixedMatches)
+        // Clear umpires on the target matches before re-assigning
+        foreach (var m in toUmpire)
         {
             m.UmpireOne = null;
             m.UmpireTwo = null;
         }
 
-        AssignUmpires(nonFixedMatches, league.Divisions, allMatches: league.Matches);
+        AssignUmpires(toUmpire, league.Divisions, allMatches: league.Matches);
     }
 
     /// <summary>
@@ -442,11 +445,12 @@ public sealed partial class SchedulingService
     ///      moving across Sat/Sun unless it gives a meaningfully better ground balance.
     ///   3. Re-add the match at its best slot and repeat for the next match.
     /// </summary>
-    public void RescheduleGroundAndUmpiring(League league, List<ForbiddenSlot>? forbidden = null)
+    public void RescheduleGroundAndUmpiring(League league, List<ForbiddenSlot>? forbidden = null,
+        IReadOnlyCollection<Match>? targetMatches = null)
     {
         // Phase 5 (full rebalance) + Phase 6
-        AssignGrounds(league, forbidden);
-        RescheduleUmpiring(league);
+        AssignGrounds(league, forbidden, targetMatches);
+        RescheduleUmpiring(league, targetMatches);
     }
 
     // ── Legacy ground+umpiring implementation kept for reference ─────────────────────────
@@ -609,8 +613,11 @@ public sealed partial class SchedulingService
             umpireWeekends[t.Name] = [];
         }
 
-        // Pre-seed from fixed matches so their umpire assignments count toward limits
-        foreach (var m in allMatches.Where(m => m.IsFixed && m.Date is not null && m.UmpireOne is not null)
+        // Pre-seed from all matches NOT being (re)assigned that already have umpire assignments.
+        // In partial mode this includes fixed matches AND non-target non-fixed matches so their
+        // existing umpire load counts toward caps and weekend limits.
+        var targetSet = new HashSet<Match>(matchesToUmpire, ReferenceEqualityComparer.Instance);
+        foreach (var m in allMatches.Where(m => !targetSet.Contains(m) && m.Date is not null && m.UmpireOne is not null)
                                      .OrderBy(m => m.Date))
         {
             var u = m.UmpireOne!;

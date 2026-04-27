@@ -49,16 +49,21 @@
                 <Button Content="⚡ Generate"        Command="{Binding GenerateScheduleCommand}"
                         FontWeight="SemiBold" Style="{StaticResource Btn}"/>
                 <Button Content="🔄 Reschedule"      Command="{Binding RescheduleCommand}"
+                        CommandParameter="{Binding ElementName=MatchGrid}"
                         Style="{StaticResource Btn}"
-                        ToolTip="Re-run keeping Fixed matches; respects Forbidden Slots"/>
+                        ToolTip="Re-run keeping Fixed matches; respects Forbidden Slots&#x0a;Select &gt;1 rows to reschedule only those non-fixed matches"/>
                 <Separator Width="1" Height="22" Background="#CCC" Margin="4,0"/>
                 <Button Content="💾 Save Schedule"    Style="{StaticResource Btn}"
                         Command="{Binding SaveScheduleCommand}"
                         Background="#2E7D32" Foreground="White" FontWeight="SemiBold"
                         ToolTip="Save current scheduled and unscheduled matches to persistent storage"/>
                 <Separator Width="1" Height="22" Background="#CCC" Margin="4,0"/>
-                <Button Content="📤 Export All"      Command="{Binding ExportScheduleCommand}"       Style="{StaticResource Btn}"/>
-                <Button Content="📤 Export Filtered" Command="{Binding ExportFilteredScheduleCommand}" Style="{StaticResource Btn}"/>
+                <Button Content="📤 Export All"      Command="{Binding ExportScheduleCommand}"
+                        CommandParameter="{Binding ElementName=MatchGrid}" Style="{StaticResource Btn}"
+                        ToolTip="Export all scheduled matches in the current grid sort order"/>
+                <Button Content="📤 Export Filtered" Command="{Binding ExportFilteredScheduleCommand}"
+                        CommandParameter="{Binding ElementName=MatchGrid}" Style="{StaticResource Btn}"
+                        ToolTip="Export only the currently visible (filtered) matches in grid sort order"/>
                 <Button Content="📤 Unscheduled"     Command="{Binding ExportUnscheduledCommand}"    Style="{StaticResource Btn}"/>
                 <Button Content="📂 Import"          Command="{Binding ImportMatchesCommand}"        Style="{StaticResource Btn}"/>
                 <Separator Width="1" Height="22" Background="#CCC" Margin="4,0"/>
@@ -88,12 +93,14 @@
                 <Separator Width="1" Height="22" Background="#CCC" Margin="4,0"/>
                 <Button Content="🧑‍⚖️ Reschedule Umpiring" Style="{StaticResource Btn}"
                         Command="{Binding RescheduleUmpiringCommand}"
+                        CommandParameter="{Binding ElementName=MatchGrid}"
                         Background="#4A148C" Foreground="White" FontWeight="SemiBold"
-                        ToolTip="Re-assign umpires for all non-fixed matches&#x0a;Priority: adjacent slot → same day → free this week → least load&#x0a;Rules: never same division, never umpiring own match"/>
+                        ToolTip="Re-assign umpires for all non-fixed matches&#x0a;Priority: adjacent slot → same day → free this week → least load&#x0a;Rules: never same division, never umpiring own match&#x0a;Select &gt;1 rows to re-assign umpires only for those non-fixed matches"/>
                 <Button Content="🏟 Reschedule Ground &amp; Umpiring" Style="{StaticResource Btn}"
                         Command="{Binding RescheduleGroundAndUmpiringCommand}"
+                        CommandParameter="{Binding ElementName=MatchGrid}"
                         Background="#006064" Foreground="White" FontWeight="SemiBold"
-                        ToolTip="Balance ground assignments across all non-fixed matches, then re-assign umpires.&#x0a;Fixed matches are completely untouched.&#x0a;Hard constraint: no two matches share the same ground + date + time slot."/>
+                        ToolTip="Balance ground assignments across all non-fixed matches, then re-assign umpires.&#x0a;Fixed matches are completely untouched.&#x0a;Hard constraint: no two matches share the same ground + date + time slot.&#x0a;Select &gt;1 rows to rebalance only those non-fixed matches"/>
                 <TextBlock Text="{Binding ScheduleStats}" VerticalAlignment="Center"
                            Foreground="#555" FontStyle="Italic" Margin="8,0,0,0"/>
             </WrapPanel>
