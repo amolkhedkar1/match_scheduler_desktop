@@ -17,6 +17,7 @@ public partial class MainViewModel : ObservableObject
     private readonly LeagueService _leagueService;
     private readonly SchedulingService _schedulingService;
     private readonly ExportService _exportService;
+    private readonly PracticeSchedulingService _practiceService;
     private readonly string _leaguesRoot;
 
     // ── League ──────────────────────────────────────────────────────────────
@@ -107,6 +108,16 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<SchedulingRequestRow> FilteredRequests { get; } = [];
     public ObservableCollection<Division> FilteredDivisions { get; } = [];
 
+    // ── Practice Schedule ────────────────────────────────────────────────────
+    public ObservableCollection<PracticeSlotRow> PracticeSlots { get; } = [];
+
+    private string _practiceStatusMessage = "No practice schedule generated.";
+    public string PracticeStatusMessage
+    {
+        get => _practiceStatusMessage;
+        set { _practiceStatusMessage = value; OnPropertyChanged(); }
+    }
+
     public StatisticsViewModel StatisticsVM { get; } = new();
 
     public string SelectedDivisionName => SelectedDivision?.Name ?? "(select a division)";
@@ -117,6 +128,7 @@ public partial class MainViewModel : ObservableObject
         _leagueService = leagueService;
         _schedulingService = schedulingService;
         _exportService = exportService;
+        _practiceService = new PracticeSchedulingService();
         _leaguesRoot = leaguesRoot;
 
         RefreshLeagueNames();
@@ -828,6 +840,79 @@ public partial class MainViewModel : ObservableObject
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Practice Schedule commands
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [RelayCommand]
+    private async Task GeneratePracticeSchedule()
+    {
+        if (CurrentLeague is null) { PracticeStatusMessage = "Open a league first."; return; }
+        if (!CurrentLeague.Matches.Any(m => m.Date.HasValue && m.Ground != null))
+        {
+            PracticeStatusMessage = "Generate and save a match schedule first.";
+            return;
+        }
+
+        var slots = _practiceService.Generate(CurrentLeague);
+        CurrentLeague.PracticeSchedule = slots;
+        await _leagueService.SaveLeagueAsync(CurrentLeague);
+
+        RenderPracticeSlots();
+        PracticeStatusMessage = slots.Count == 0
+            ? "No practice slots generated — ensure matches have ground assignments."
+            : $"{slots.Count} practice slot(s) generated across {slots.Select(s => s.GroundName).Distinct().Count()} ground(s).";
+    }
+
+    [RelayCommand]
+    private async Task ExportPracticeSchedule()
+    {
+        if (CurrentLeague is null || CurrentLeague.PracticeSchedule.Count == 0)
+        {
+            PracticeStatusMessage = "No practice schedule to export.";
+            return;
+        }
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title            = "Export Practice Schedule",
+            Filter           = "CSV files (*.csv)|*.csv",
+            FileName         = $"{CurrentLeague.Name}_practice_schedule.csv"
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        var rows = CurrentLeague.PracticeSchedule.Select(p => new PracticeSlotCsv
+        {
+            Date   = p.Date.ToString("MM/dd/yyyy"),
+            Ground = p.GroundName,
+            Team1  = p.TeamOne   ?? string.Empty,
+            Team2  = p.TeamTwo   ?? string.Empty,
+            Team3  = p.TeamThree ?? string.Empty
+        });
+
+        var csv = new CsvService();
+        await csv.WriteAsync(dlg.FileName, rows);
+        PracticeStatusMessage = $"Exported to {System.IO.Path.GetFileName(dlg.FileName)}.";
+    }
+
+    private void RenderPracticeSlots()
+    {
+        PracticeSlots.Clear();
+        if (CurrentLeague is null) return;
+        foreach (var slot in CurrentLeague.PracticeSchedule)
+        {
+            PracticeSlots.Add(new PracticeSlotRow
+            {
+                DateDisplay = slot.Date.ToString("MM/dd/yyyy"),
+                DayOfWeek   = slot.Date.DayOfWeek.ToString(),
+                Ground      = slot.GroundName,
+                TeamOne     = slot.TeamOne   ?? string.Empty,
+                TeamTwo     = slot.TeamTwo   ?? string.Empty,
+                TeamThree   = slot.TeamThree ?? string.Empty
+            });
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -895,6 +980,12 @@ public partial class MainViewModel : ObservableObject
         foreach (var m in CurrentLeague.UnscheduledMatches)
             UnscheduledMatches.Add(new UnscheduledMatchRow(m, m.UnscheduledReason ?? "Previously unscheduled"));
 
+        // Practice schedule
+        RenderPracticeSlots();
+        PracticeStatusMessage = CurrentLeague.PracticeSchedule.Count == 0
+            ? "No practice schedule generated."
+            : $"{CurrentLeague.PracticeSchedule.Count} practice slot(s) loaded.";
+
         StatusMessage = $"Loaded: {CurrentLeague.Name} — {CurrentLeague.Divisions.Count} divisions, " +
                         $"{CurrentLeague.Matches.Count} matches, {CurrentLeague.UnscheduledMatches.Count} unscheduled";
     }
@@ -912,6 +1003,8 @@ public partial class MainViewModel : ObservableObject
         FilteredRequests.Clear();
         FilteredDivisions.Clear();
         MoveOptions.Clear();
+        PracticeSlots.Clear();
+        PracticeStatusMessage = "No practice schedule generated.";
         StatisticsVM.Clear();
         StatusMessage = "No league loaded.";
     }
@@ -1902,5 +1995,16 @@ public sealed class PairingRow
     public int    Index { get; init; }
     public string TeamA { get; init; } = string.Empty;
     public string TeamB { get; init; } = string.Empty;
+}
+
+// ── PracticeSlotRow — one row in the Practice Schedule DataGrid ───────────────
+public sealed class PracticeSlotRow
+{
+    public string DateDisplay { get; init; } = string.Empty;
+    public string DayOfWeek  { get; init; } = string.Empty;
+    public string Ground     { get; init; } = string.Empty;
+    public string TeamOne    { get; init; } = string.Empty;
+    public string TeamTwo    { get; init; } = string.Empty;
+    public string TeamThree  { get; init; } = string.Empty;
 }
 

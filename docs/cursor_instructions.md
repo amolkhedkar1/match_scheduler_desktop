@@ -1,4 +1,4 @@
-# Cricket Tournament Scheduler — Requirements & Implementation Reference
+﻿# Cricket Tournament Scheduler — Requirements & Implementation Reference
 
 ---
 
@@ -28,7 +28,7 @@ CricketScheduler/
 ├── CricketScheduler.sln
 ├── src/CricketScheduler.App/
 │   ├── App.xaml / .cs
-│   ├── MainWindow.xaml / .cs          ← league toolbar + TabControl host (5 tabs)
+│   ├── MainWindow.xaml / .cs          ← league toolbar + TabControl host (6 tabs)
 │   ├── InputDialog.cs                 ← modal text-input dialog
 │   ├── InverseBoolConverter.cs        ← bool→!bool for RadioButton bindings
 │   ├── Views/
@@ -37,6 +37,7 @@ CricketScheduler/
 │   │   ├── SchedulingRequestView.xaml/.cs
 │   │   ├── SchedulerView.xaml/.cs
 │   │   ├── StatisticsView.xaml/.cs    ← read-only pivot grids; dynamic columns from DataTable
+│   │   ├── PracticeView.xaml/.cs     ← weekday practice schedule; Generate + Export CSV
 │   │   └── LeagueSelectionView.xaml/.cs
 │   ├── ViewModels/
 │   │   ├── MainViewModel.cs           ← single unified ViewModel; stubs for others
@@ -50,7 +51,8 @@ CricketScheduler/
 │   │   ├── Ground.cs
 │   │   ├── TimeSlot.cs
 │   │   ├── SchedulingRequest.cs       ← IsFullDayBlock computed property
-│   │   └── ForbiddenSlot.cs           ← Date?, GroundName?, TimeSlot?, Division?
+│   │   ├── ForbiddenSlot.cs           ← Date?, GroundName?, TimeSlot?, Division?
+│   │   └── PracticeSlot.cs             ← Date, GroundName, TeamOne/Two/Three (up to 3 teams)
 │   ├── Services/
 │   │   ├── CsvService.cs
 │   │   ├── LeagueService.cs           ← Load/Save all CSVs including schedule.csv + unscheduled.csv
@@ -58,7 +60,8 @@ CricketScheduler/
 │   │   ├── ExportService.cs
 │   │   ├── ConstraintService.cs
 │   │   ├── FairnessService.cs
-│   │   └── SuggestionService.cs
+│   │   ├── SuggestionService.cs
+│   │   └── PracticeSchedulingService.cs ← Generate(league) → List<PracticeSlot>
 │   └── SchedulingEngine/              ← internal static classes
 │       ├── MatchGenerator.cs          ← Round Robin + Fixed pairing algorithms
 │       ├── SchedulingMatrixBuilder.cs
@@ -71,7 +74,8 @@ CricketScheduler/
 │   ├── divisions.csv
 │   ├── constraints.csv
 │   ├── schedule.csv
-│   └── unscheduled.csv
+│   ├── unscheduled.csv
+│   └── practice_schedule.csv
 ├── docs/cursor_instructions.md
 └── tests/CricketScheduler.App.Tests/
 ```
@@ -183,6 +187,7 @@ public sealed class League
     public List<Division> Divisions { get; set; } = [];
     public List<Match> Matches { get; set; } = [];
     public List<Match> UnscheduledMatches { get; set; } = []; // persisted to unscheduled.csv
+    public List<PracticeSlot> PracticeSchedule { get; set; } = []; // persisted to practice_schedule.csv
     public List<SchedulingRequest> Requests { get; set; } = [];
 }
 ```
@@ -191,7 +196,7 @@ public sealed class League
 
 ## 6. Application Tabs
 
-The main window hosts five tabs via a `TabControl`: **Tournament**, **Divisions**, **Requests**, **Scheduler**, **Statistics**. All five bind to the same `MainViewModel` instance. The Statistics tab additionally accesses `MainViewModel.StatisticsVM` (a `StatisticsViewModel` child instance) for its pivot data.
+The main window hosts six tabs via a `TabControl`: **Tournament**, **Divisions**, **Requests**, **Scheduler**, **Statistics**, **Practice**. All six bind to the same `MainViewModel` instance. The Statistics tab additionally accesses `MainViewModel.StatisticsVM` (a `StatisticsViewModel` child instance) for its pivot data.
 
 ### 6.1 Tournament Tab (`TournamentView`)
 
@@ -1100,3 +1105,127 @@ Tables 1–3 use `"Team"` as the first column; table 4 uses `"Ground"`. All tabl
 - **Row container recycling:** WPF DataGrid virtualises rows. The `OnLoadingRow` handler always sets both the "Total" style **and** the normal-row reset path to avoid stale bold/grey on recycled containers.
 - **First-column detection:** `BuildColumns` checks `name == "Team" || name == "Ground"` to identify the row-label column, allowing the same method to handle both team-pivot tables and the ground-pivot table.
 - **Duplicate match pairs in fixed-pairing divisions:** `GenerateSchedule` saves per-match relaxation flags using a 4-tuple key `(TeamOne, TeamTwo, Division, int occurrenceIndex)`. The occurrence index increments each time the same triple appears in `UnscheduledMatches`, so two KC Rockers vs Pirates matches in Div A get keys `(..., 0)` and `(..., 1)` respectively. The same index-counting logic is applied when looking up relaxations in the backtrack step and when restoring them after generate.
+
+---
+
+## 17. Practice Schedule (Tab 6)
+
+### 17.1 Overview
+
+The Practice Schedule feature generates weekday practice slots for teams who have a scheduled match in the upcoming weekend. It is accessible via the **Practice** tab (Tab 6 in `MainWindow.xaml`).
+
+### 17.2 Algorithm (`PracticeSchedulingService.Generate`)
+
+**Inputs:** `League` (requires `League.Matches` with `Date` and `Ground` assigned, and `League.Divisions` for division membership).
+
+**Steps:**
+
+1. Filter `League.Matches` to those with a date (Saturday or Sunday) and an assigned ground.
+2. Group matches by weekend **Saturday anchor** (`WeekendSaturday(date)` — if date is Sunday, subtract 1 day).
+3. For each weekend group:
+   - Build `teamGround` map: `{ teamName → groundName }` from `Match.TeamOne` and `Match.TeamTwo`. One entry per team (TryAdd — a team can only appear once per weekend).
+   - Group teams by ground: `{ groundName → [team, ...] }`.
+   - For each ground, compute **Mon–Fri** practice dates: `saturday.AddDays(-5)` = Monday; days 0–4 are Mon–Fri.
+4. For each ground in the weekend:
+   - Initialise 5 slots (`slots[0..4]`, one per weekday), each a `List<string>` capped at 3 teams.
+   - Sort teams **most-constrained first** (descending count of already-blocked days — full or division-conflicted slots).
+   - For each team, find the **best available day**:
+     - Skip days where slot is full (≥ 3 teams).
+     - Skip days where a same-division team already occupies the slot.
+     - Score remaining days: `usage[dayIdx] * 10 + slotTeams.Count` (prefer the day the team has used least, then the day with fewer teams).
+     - Assign to lowest-score day; increment `teamDayUsage[team][dayIdx]`.
+   - Emit one `PracticeSlot` per occupied weekday slot (skip empty days).
+5. Return all slots sorted by `Date`, then `GroundName`.
+
+**Day-usage tracking:** `teamDayUsage` is a `Dictionary<string, int[]>` (team → 5-element int array, index 0=Mon…4=Fri) that persists **across all weeks** within a single `Generate` call, ensuring weekday assignments are balanced over the full schedule.
+
+### 17.3 Hard Constraints
+
+| Constraint | Detail |
+|---|---|
+| One practice slot per day per ground | Each ground has at most one practice slot per weekday per week |
+| Max 3 teams per slot | Slot is skipped if already full |
+| Ground matches match ground | Team practices at the same ground as their weekend match |
+| No same-division sharing | Two teams from the same division never share a slot |
+| Only teams with weekend matches | Only teams appearing in `League.Matches` for that weekend get practice slots |
+
+### 17.4 Data Model
+
+**`Models/PracticeSlot.cs`**
+```csharp
+public sealed class PracticeSlot
+{
+    public required DateOnly Date { get; init; }       // weekday date (Mon–Fri)
+    public required string GroundName { get; init; }
+    public string? TeamOne   { get; set; }
+    public string? TeamTwo   { get; set; }
+    public string? TeamThree { get; set; }
+    public IEnumerable<string> Teams { get; }          // non-null team names
+}
+```
+
+**`League.PracticeSchedule`** — `List<PracticeSlot>` added to `League.cs`; loaded/saved with the league.
+
+### 17.5 Persistence
+
+**File:** `data/leagues/{leagueName}/practice_schedule.csv`
+
+**Format:**
+```
+Date,Ground,Team1,Team2,Team3
+04/14/2026,OCG,Team1,Team2,Team3
+04/15/2026,Central Park,Team4,Team5,
+```
+
+- `Date`: `MM/dd/yyyy`
+- Empty `Team2`/`Team3` when fewer than 3 teams share the slot
+- Saved automatically whenever `Generate` runs; also saved on `SaveLeagueAsync`
+- Read back into `League.PracticeSchedule` on `LoadLeagueAsync`
+
+**CSV record class:** `PracticeSlotCsv` (defined in `LeagueService.cs` alongside other CSV record types).
+
+### 17.6 ViewModel (`MainViewModel`)
+
+**Collection:** `ObservableCollection<PracticeSlotRow> PracticeSlots` — bound to the Practice tab DataGrid.
+
+**Property:** `string PracticeStatusMessage` — bound to the status bar at the bottom of the Practice tab.
+
+**Row view model:** `PracticeSlotRow` (defined at the bottom of `MainViewModel.cs`)
+```csharp
+public sealed class PracticeSlotRow
+{
+    public string DateDisplay { get; init; }  // MM/dd/yyyy
+    public string DayOfWeek  { get; init; }  // "Monday", "Tuesday", etc.
+    public string Ground     { get; init; }
+    public string TeamOne    { get; init; }
+    public string TeamTwo    { get; init; }
+    public string TeamThree  { get; init; }
+}
+```
+
+**Commands:**
+
+| Command | Behaviour |
+|---|---|
+| `GeneratePracticeScheduleCommand` | Calls `PracticeSchedulingService.Generate`, saves via `LeagueService.SaveLeagueAsync`, calls `RenderPracticeSlots`, updates `PracticeStatusMessage` |
+| `ExportPracticeScheduleCommand` | Opens `SaveFileDialog`, writes `practice_schedule.csv` to user-chosen path via `CsvService` |
+
+**Lifecycle hooks:**
+- `PopulateFormsFromLeague` — calls `RenderPracticeSlots()` and sets `PracticeStatusMessage` from `League.PracticeSchedule.Count`
+- `ClearAllForms` — clears `PracticeSlots` and resets `PracticeStatusMessage`
+
+### 17.7 View (`PracticeView.xaml`)
+
+**Toolbar** (top `Border`): `🏏 Generate Practice Schedule` button (blue, bound to `GeneratePracticeScheduleCommand`) + `📤 Export CSV` button.
+
+**Algorithm description panel**: `#EEF4FB` blue-tinted `Border` with a brief explanation of the algorithm shown to the user.
+
+**DataGrid** (`IsReadOnly=True`, `SelectionMode=Extended`): columns — Date, Day, Ground, Team 1, Team 2, Team 3.
+
+**Status bar** (bottom `Border`): bound to `PracticeStatusMessage`, shown in italic grey.
+
+### 17.8 Service (`PracticeSchedulingService`)
+
+- No external dependencies; instantiated directly in `MainViewModel` constructor: `_practiceService = new PracticeSchedulingService()`
+- Single public method: `List<PracticeSlot> Generate(League league)`
+- Stateless between calls; `teamDayUsage` is local to each `Generate` invocation

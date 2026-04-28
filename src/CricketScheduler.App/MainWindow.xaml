@@ -59,6 +59,10 @@
                 <views:StatisticsView/>
             </TabItem>
 
+            <TabItem Header="Practice">
+                <views:PracticeView/>
+            </TabItem>
+
         </TabControl>
     </Grid>
 </Window>

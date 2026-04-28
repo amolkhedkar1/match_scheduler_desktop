@@ -130,6 +130,17 @@ public sealed class LeagueService
             UnscheduledReason  = u.Reason
         }).ToList();
 
+        // Load practice schedule (file may not exist for older leagues)
+        var practiceRows = await _csv.ReadAsync<PracticeSlotCsv>(Path.Combine(path, "practice_schedule.csv"));
+        var practiceSlots = practiceRows.Select(p => new PracticeSlot
+        {
+            Date       = DateOnly.ParseExact(p.Date, "MM/dd/yyyy"),
+            GroundName = p.Ground,
+            TeamOne    = string.IsNullOrWhiteSpace(p.Team1) ? null : p.Team1,
+            TeamTwo    = string.IsNullOrWhiteSpace(p.Team2) ? null : p.Team2,
+            TeamThree  = string.IsNullOrWhiteSpace(p.Team3) ? null : p.Team3
+        }).ToList();
+
         return new League
         {
             Name               = name,
@@ -137,7 +148,8 @@ public sealed class LeagueService
             Divisions          = divisionModels,
             Constraints        = requests,
             Matches            = modelMatches,
-            UnscheduledMatches = unscheduledMatches
+            UnscheduledMatches = unscheduledMatches,
+            PracticeSchedule   = practiceSlots
         };
     }
 
@@ -215,6 +227,17 @@ public sealed class LeagueService
             Reason    = m.UnscheduledReason ?? string.Empty
         });
         await _csv.WriteAsync(Path.Combine(path, "unscheduled.csv"), unscheduled);
+
+        // Always save practice schedule (even if empty, to clear stale file)
+        var practice = league.PracticeSchedule.Select(p => new PracticeSlotCsv
+        {
+            Date   = p.Date.ToString("MM/dd/yyyy"),
+            Ground = p.GroundName,
+            Team1  = p.TeamOne   ?? string.Empty,
+            Team2  = p.TeamTwo   ?? string.Empty,
+            Team3  = p.TeamThree ?? string.Empty
+        });
+        await _csv.WriteAsync(Path.Combine(path, "practice_schedule.csv"), practice);
     }
 
     private string GetLeaguePath(string name) => Path.Combine(_root, name);
@@ -288,4 +311,13 @@ public sealed class UnscheduledCsv
     public string TeamOne   { get; set; } = string.Empty;
     public string TeamTwo   { get; set; } = string.Empty;
     public string Reason    { get; set; } = string.Empty;
+}
+
+public sealed class PracticeSlotCsv
+{
+    public string Date   { get; set; } = string.Empty;
+    public string Ground { get; set; } = string.Empty;
+    public string Team1  { get; set; } = string.Empty;
+    public string Team2  { get; set; } = string.Empty;
+    public string Team3  { get; set; } = string.Empty;
 }

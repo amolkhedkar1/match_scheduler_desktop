@@ -9,4 +9,6 @@ public sealed class League
     public List<Match> Matches        { get; set; } = [];
     /// <summary>Matches that could not be scheduled — persisted across sessions.</summary>
     public List<Match> UnscheduledMatches { get; set; } = [];
+    /// <summary>Generated practice slots — one weekday slot per ground per week.</summary>
+    public List<PracticeSlot> PracticeSchedule { get; set; } = [];
 }
