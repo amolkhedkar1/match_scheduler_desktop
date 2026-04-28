@@ -3,25 +3,41 @@ using CricketScheduler.App.Models;
 namespace CricketScheduler.App.Services;
 
 /// <summary>
-/// Generates a weekday practice schedule for teams with upcoming weekend matches.
+/// Generates a weekday practice schedule in two phases per weekend:
 ///
-/// Rules:
-///   HARD — Teams playing each other that weekend never share a practice slot.
-///   HARD — Max 3 teams per slot per day per ground.
-///   HARD — Practice ground equals the team's match ground.
-///   SOFT — Prefer no same-division teams in the same slot; relaxed when needed
-///           so every team always gets a slot (no team is left unassigned).
-///   SOFT — Weekday assignments distributed evenly across teams over the season.
+///   Phase 1 — Playing teams: teams with a scheduled match that weekend are
+///   placed at their match ground, Mon–Fri, up to 3 per slot.
+///
+///   Phase 2 — Non-playing fill: remaining slot capacity (below 3 teams/slot)
+///   is filled with teams from the full league pool who have NO match that
+///   weekend. Each non-playing team receives at most one slot per weekend.
+///   Teams with the fewest cumulative practice sessions are prioritised first
+///   so weekday assignments stay balanced across the whole season for everyone.
+///
+/// Hard constraints (never violated):
+///   - Match opponents never share a slot.
+///   - Max 3 teams per slot per day per ground.
+///   - Playing teams practice at their match ground only.
+///
+/// Soft constraints (scoring penalty, relaxed to ensure full coverage):
+///   - Prefer no same-division teams in the same slot (+5 to score).
+///   - Prefer weekdays this team has used least (usage × 10 to score).
+///   - Prefer slots with fewer teams already assigned (+count to score).
 /// </summary>
 public sealed class PracticeSchedulingService
 {
     public List<PracticeSlot> Generate(League league)
     {
-        // Build team → division lookup
+        // team → division lookup
         var teamDivision = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var div in league.Divisions)
             foreach (var team in div.Teams)
                 teamDivision[team.Name] = div.Name;
+
+        // Full team pool (all teams in the league)
+        var allTeams = league.Divisions
+            .SelectMany(d => d.Teams.Select(t => t.Name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var scheduled = league.Matches
             .Where(m => m.Date.HasValue && m.Ground != null
@@ -36,7 +52,7 @@ public sealed class PracticeSchedulingService
             .GroupBy(m => WeekendSaturday(m.Date!.Value))
             .OrderBy(g => g.Key);
 
-        // Per-team weekday usage count [0=Mon … 4=Fri], persists across all weeks
+        // Per-team weekday usage [0=Mon…4=Fri] shared across all weeks for even distribution
         var teamDayUsage = new Dictionary<string, int[]>(StringComparer.OrdinalIgnoreCase);
 
         var result = new List<PracticeSlot>();
@@ -46,7 +62,7 @@ public sealed class PracticeSchedulingService
             var saturday = weekendGroup.Key;
             var monday   = saturday.AddDays(-5); // Monday of that calendar week
 
-            // HARD constraint source: direct match opponents this weekend
+            // Build match-opponent pairs (HARD constraint)
             var teamOpponent = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var match in weekendGroup)
             {
@@ -54,16 +70,26 @@ public sealed class PracticeSchedulingService
                 teamOpponent[match.TeamTwo] = match.TeamOne;
             }
 
-            // Team → ground mapping (one match per team per weekend)
+            // Build team → ground for teams playing this weekend
             var teamGround = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var match in weekendGroup)
             {
-                var g = match.Ground!.Name;
-                teamGround.TryAdd(match.TeamOne, g);
-                teamGround.TryAdd(match.TeamTwo, g);
+                teamGround.TryAdd(match.TeamOne, match.Ground!.Name);
+                teamGround.TryAdd(match.TeamTwo, match.Ground!.Name);
             }
 
-            // Group teams by ground
+            // Collect all grounds that have at least one match this weekend
+            var groundNames = teamGround.Values
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // slots[groundName][dayIndex] = list of assigned team names (max 3)
+            var groundSlots = groundNames.ToDictionary(
+                g => g,
+                _ => Enumerable.Range(0, 5).Select(_ => new List<string>()).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+
+            // ── Phase 1: place playing teams at their match ground ────────────
             var groundTeams = teamGround
                 .GroupBy(kv => kv.Value, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).ToList(),
@@ -71,27 +97,83 @@ public sealed class PracticeSchedulingService
 
             foreach (var (groundName, teams) in groundTeams)
             {
-                // slots[0..4] = Mon..Fri, each holds up to 3 team names
-                var slots = Enumerable.Range(0, 5).Select(_ => new List<string>()).ToArray();
-
-                // Process most-constrained teams first.
-                // Constraint: a team's only hard block is if its opponent already occupies a day.
-                // Evaluate this dynamically — re-sort remaining teams each iteration.
+                var slots     = groundSlots[groundName];
                 var remaining = new List<string>(teams);
 
                 while (remaining.Count > 0)
                 {
-                    // Find the team with the fewest valid days (hardest to place)
+                    // Most-constrained first: team blocked on the most days goes next
                     var next = remaining
                         .OrderByDescending(t => CountHardBlockedDays(t, slots, teamOpponent))
                         .ThenBy(t => t)
                         .First();
                     remaining.Remove(next);
 
-                    AssignTeam(next, slots, teamDivision, teamOpponent, teamDayUsage);
+                    AssignToSlot(next, slots, teamDivision, teamOpponent, teamDayUsage);
+                }
+            }
+
+            // ── Phase 2: fill remaining capacity with non-playing teams ───────
+            var nonPlaying = allTeams
+                .Where(t => !teamGround.ContainsKey(t))
+                .ToList();
+
+            // Prioritise teams with the fewest cumulative practice sessions so far
+            // (sum of all weekday usage counts) — this is the "make it even" rule.
+            // After the first pass each team that gets a slot this weekend is skipped
+            // so no non-playing team is assigned more than once per weekend.
+            var assignedThisWeekend = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Keep picking the least-used unassigned non-playing team and placing them
+            // in the best available slot across any ground, until no more slots remain.
+            while (true)
+            {
+                var candidate = nonPlaying
+                    .Where(t => !assignedThisWeekend.Contains(t))
+                    .OrderBy(t => EnsureUsage(teamDayUsage, t).Sum())  // fewest total sessions
+                    .ThenBy(t => t)
+                    .FirstOrDefault();
+
+                if (candidate is null) break; // all non-playing teams assigned for this weekend
+
+                // Find the best (ground, day) slot across all grounds
+                int    bestScore  = int.MaxValue;
+                string? bestGround = null;
+                int    bestDay    = -1;
+
+                var usage = EnsureUsage(teamDayUsage, candidate);
+                var div   = teamDivision.GetValueOrDefault(candidate, candidate);
+
+                foreach (var (groundName, slots) in groundSlots)
+                {
+                    for (int dayIdx = 0; dayIdx < 5; dayIdx++)
+                    {
+                        var slotTeams = slots[dayIdx];
+                        if (slotTeams.Count >= 3) continue;
+
+                        bool hasSameDiv = slotTeams.Any(t =>
+                            teamDivision.GetValueOrDefault(t, t) == div);
+
+                        int score = usage[dayIdx] * 10 + slotTeams.Count + (hasSameDiv ? 5 : 0);
+                        if (score < bestScore)
+                        {
+                            bestScore  = score;
+                            bestGround = groundName;
+                            bestDay    = dayIdx;
+                        }
+                    }
                 }
 
-                // Emit one PracticeSlot per occupied day
+                if (bestGround is null) break; // no remaining capacity anywhere
+
+                groundSlots[bestGround][bestDay].Add(candidate);
+                usage[bestDay]++;
+                assignedThisWeekend.Add(candidate);
+            }
+
+            // ── Phase 3: emit PracticeSlots for every occupied slot ───────────
+            foreach (var (groundName, slots) in groundSlots)
+            {
                 for (int dayIdx = 0; dayIdx < 5; dayIdx++)
                 {
                     var slotTeams = slots[dayIdx];
@@ -112,15 +194,12 @@ public sealed class PracticeSchedulingService
         return [.. result.OrderBy(s => s.Date).ThenBy(s => s.GroundName)];
     }
 
-    // Count how many of the 5 days are hard-blocked for this team:
-    // a day is blocked when the slot is full OR the team's match opponent is already there.
+    // Days where the slot is already full or the team's match opponent is present.
     private static int CountHardBlockedDays(
-        string team,
-        List<string>[] slots,
-        Dictionary<string, string> teamOpponent)
+        string team, List<string>[] slots, Dictionary<string, string> teamOpponent)
     {
         var opponent = teamOpponent.GetValueOrDefault(team);
-        int blocked = 0;
+        int blocked  = 0;
         for (int d = 0; d < 5; d++)
         {
             if (slots[d].Count >= 3) { blocked++; continue; }
@@ -129,7 +208,8 @@ public sealed class PracticeSchedulingService
         return blocked;
     }
 
-    private static void AssignTeam(
+    // Find the best day for a playing team and assign them.
+    private static void AssignToSlot(
         string team,
         List<string>[] slots,
         Dictionary<string, string> teamDivision,
@@ -146,27 +226,16 @@ public sealed class PracticeSchedulingService
         for (int dayIdx = 0; dayIdx < 5; dayIdx++)
         {
             var slotTeams = slots[dayIdx];
-
-            // HARD: slot full
             if (slotTeams.Count >= 3) continue;
-
-            // HARD: match opponent cannot share slot
             if (opponent != null && SlotContains(slotTeams, opponent)) continue;
 
-            // SOFT penalty: prefer days without same-division teammates
             bool hasSameDiv = slotTeams.Any(t => teamDivision.GetValueOrDefault(t, t) == div);
-
-            // Score: (times this team used this day) * 10 + current slot occupancy + same-div penalty
             int score = usage[dayIdx] * 10 + slotTeams.Count + (hasSameDiv ? 5 : 0);
 
-            if (score < bestScore)
-            {
-                bestScore = score;
-                bestDay   = dayIdx;
-            }
+            if (score < bestScore) { bestScore = score; bestDay = dayIdx; }
         }
 
-        if (bestDay < 0) return; // all 5 days blocked by opponent + full slots (extremely rare)
+        if (bestDay < 0) return;
 
         slots[bestDay].Add(team);
         usage[bestDay]++;

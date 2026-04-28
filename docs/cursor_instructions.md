@@ -1118,29 +1118,37 @@ The Practice Schedule feature generates weekday practice slots for teams who hav
 
 **Inputs:** `League` (requires `League.Matches` with `Date` and `Ground` assigned, and `League.Divisions` for division membership).
 
-**Steps:**
+The algorithm runs in **three phases per weekend**:
 
-1. Filter `League.Matches` to those with a date (Saturday or Sunday) and an assigned ground.
-2. Group matches by weekend **Saturday anchor** (`WeekendSaturday(date)` — if date is Sunday, subtract 1 day).
+#### Phase 1 — Playing teams (match ground, constrained)
+
+1. Filter `League.Matches` to those with a Saturday or Sunday date and an assigned ground.
+2. Group matches by weekend **Saturday anchor** (`WeekendSaturday(date)` — Sunday → subtract 1 day).
 3. For each weekend group:
-   - Build `teamOpponent` map: `{ teamName → opponentName }` — each team maps to the team they face this weekend (HARD constraint source).
-   - Build `teamGround` map: `{ teamName → groundName }`. One entry per team (TryAdd).
-   - Group teams by ground: `{ groundName → [team, ...] }`.
-   - For each ground, compute **Mon–Fri** practice dates: `saturday.AddDays(-5)` = Monday; days 0–4 are Mon–Fri.
-4. For each ground in the weekend:
-   - Initialise 5 slots (`slots[0..4]`, one per weekday), each a `List<string>` capped at 3 teams.
-   - Process teams in a dynamic most-constrained-first loop:
-     - Each iteration picks the remaining team with the most **hard-blocked days** (days where the slot is full OR the team's match opponent is already there).
-     - For each candidate day, apply hard and soft checks:
-       - **HARD skip**: slot full (≥ 3 teams) or match opponent already in slot.
-       - **Soft penalty** (+5 to score): a same-division team is already in the slot.
-       - **Score**: `usage[dayIdx] × 10 + slotTeams.Count + sameDivPenalty`
-     - Assign to lowest-score day; increment `teamDayUsage[team][dayIdx]`.
-   - Because same-division is only a scoring penalty (not a hard skip), every team always gets a slot unless all 5 days are blocked by the opponent + full — which is impossible with normal tournament sizes.
-   - Emit one `PracticeSlot` per occupied weekday slot (skip empty days).
-5. Return all slots sorted by `Date`, then `GroundName`.
+   - Build `teamOpponent` map: `{ teamName → opponentName }` (HARD constraint source).
+   - Build `teamGround` map: `{ teamName → groundName }` via `TryAdd`.
+   - Initialise `groundSlots[groundName][dayIdx]` — `List<string>` per ground per weekday (5 days × N grounds).
+4. For each ground, assign playing teams using a **dynamic most-constrained-first loop**:
+   - Each iteration selects the remaining team with the most **hard-blocked days** (slot full or match opponent already there).
+   - Scoring for each candidate day: `usage[dayIdx] × 10 + slotTeams.Count + (sameDivision ? 5 : 0)`
+   - Assign to lowest-score day; increment `teamDayUsage[team][dayIdx]`.
 
-**Day-usage tracking:** `teamDayUsage` is a `Dictionary<string, int[]>` (team → 5-element int array, index 0=Mon…4=Fri) that persists **across all weeks** within a single `Generate` call, ensuring weekday assignments are balanced over the full schedule.
+#### Phase 2 — Non-playing fill (any ground with remaining capacity)
+
+5. Collect all league teams **not** in `teamGround` for this weekend.
+6. Sort non-playing teams by **total cumulative practice sessions** (sum of their `teamDayUsage` array) ascending — the team with the fewest practice days so far goes first, making distribution even across the whole season.
+7. Repeatedly pick the least-practiced non-playing team and place them in the best available `(ground, day)` slot across all grounds:
+   - Skip slots at capacity (≥ 3 teams).
+   - Score: `usage[dayIdx] × 10 + slotTeams.Count + (sameDivision ? 5 : 0)`
+   - Each non-playing team receives **at most one slot per weekend** (tracked via `assignedThisWeekend`).
+   - Loop ends when all non-playing teams have a slot or all slot capacity is exhausted.
+
+#### Phase 3 — Emit results
+
+8. Emit one `PracticeSlot` per occupied `(ground, day)` across all grounds.
+9. Return all slots sorted by `Date`, then `GroundName`.
+
+**Day-usage tracking:** `teamDayUsage` (`Dictionary<string, int[]>`, index 0=Mon…4=Fri) is shared across **all weeks and both phases** within a single `Generate` call, ensuring even weekday spread for every team — playing and non-playing — over the full season.
 
 ### 17.3 Constraints
 
@@ -1148,10 +1156,11 @@ The Practice Schedule feature generates weekday practice slots for teams who hav
 |---|---|---|
 | Match opponents never share a slot | **HARD** | Teams playing each other that weekend are blocked from the same day |
 | Max 3 teams per slot | **HARD** | Slot is full once 3 teams are assigned |
-| Ground matches match ground | **HARD** | Team practices at the same ground as their weekend match |
-| Only teams with weekend matches | **HARD** | Only teams in `League.Matches` for that weekend get practice slots |
-| No same-division sharing | **SOFT** | Penalised in scoring (+5); relaxed automatically when needed so no team is left without a slot |
-| Even weekday distribution | **SOFT** | Per-team usage history steers assignments away from over-used weekdays |
+| Playing teams use their match ground | **HARD** | Phase 1 teams are pinned to the ground of their weekend match |
+| Non-playing teams: one slot per weekend | **HARD** | Tracked via `assignedThisWeekend`; prevents double-assignment |
+| No same-division sharing | **SOFT** | +5 scoring penalty; relaxed automatically so no team is left without a slot |
+| Even weekday distribution (all teams) | **SOFT** | `teamDayUsage` covers both playing and non-playing teams; least-used day preferred by scoring |
+| Even season-wide practice load | **SOFT** | Non-playing candidates sorted by total session count; under-practiced teams always placed first |
 
 ### 17.4 Data Model
 
