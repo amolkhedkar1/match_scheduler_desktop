@@ -1123,31 +1123,35 @@ The Practice Schedule feature generates weekday practice slots for teams who hav
 1. Filter `League.Matches` to those with a date (Saturday or Sunday) and an assigned ground.
 2. Group matches by weekend **Saturday anchor** (`WeekendSaturday(date)` — if date is Sunday, subtract 1 day).
 3. For each weekend group:
-   - Build `teamGround` map: `{ teamName → groundName }` from `Match.TeamOne` and `Match.TeamTwo`. One entry per team (TryAdd — a team can only appear once per weekend).
+   - Build `teamOpponent` map: `{ teamName → opponentName }` — each team maps to the team they face this weekend (HARD constraint source).
+   - Build `teamGround` map: `{ teamName → groundName }`. One entry per team (TryAdd).
    - Group teams by ground: `{ groundName → [team, ...] }`.
    - For each ground, compute **Mon–Fri** practice dates: `saturday.AddDays(-5)` = Monday; days 0–4 are Mon–Fri.
 4. For each ground in the weekend:
    - Initialise 5 slots (`slots[0..4]`, one per weekday), each a `List<string>` capped at 3 teams.
-   - Sort teams **most-constrained first** (descending count of already-blocked days — full or division-conflicted slots).
-   - For each team, find the **best available day**:
-     - Skip days where slot is full (≥ 3 teams).
-     - Skip days where a same-division team already occupies the slot.
-     - Score remaining days: `usage[dayIdx] * 10 + slotTeams.Count` (prefer the day the team has used least, then the day with fewer teams).
+   - Process teams in a dynamic most-constrained-first loop:
+     - Each iteration picks the remaining team with the most **hard-blocked days** (days where the slot is full OR the team's match opponent is already there).
+     - For each candidate day, apply hard and soft checks:
+       - **HARD skip**: slot full (≥ 3 teams) or match opponent already in slot.
+       - **Soft penalty** (+5 to score): a same-division team is already in the slot.
+       - **Score**: `usage[dayIdx] × 10 + slotTeams.Count + sameDivPenalty`
      - Assign to lowest-score day; increment `teamDayUsage[team][dayIdx]`.
+   - Because same-division is only a scoring penalty (not a hard skip), every team always gets a slot unless all 5 days are blocked by the opponent + full — which is impossible with normal tournament sizes.
    - Emit one `PracticeSlot` per occupied weekday slot (skip empty days).
 5. Return all slots sorted by `Date`, then `GroundName`.
 
 **Day-usage tracking:** `teamDayUsage` is a `Dictionary<string, int[]>` (team → 5-element int array, index 0=Mon…4=Fri) that persists **across all weeks** within a single `Generate` call, ensuring weekday assignments are balanced over the full schedule.
 
-### 17.3 Hard Constraints
+### 17.3 Constraints
 
-| Constraint | Detail |
-|---|---|
-| One practice slot per day per ground | Each ground has at most one practice slot per weekday per week |
-| Max 3 teams per slot | Slot is skipped if already full |
-| Ground matches match ground | Team practices at the same ground as their weekend match |
-| No same-division sharing | Two teams from the same division never share a slot |
-| Only teams with weekend matches | Only teams appearing in `League.Matches` for that weekend get practice slots |
+| Constraint | Type | Detail |
+|---|---|---|
+| Match opponents never share a slot | **HARD** | Teams playing each other that weekend are blocked from the same day |
+| Max 3 teams per slot | **HARD** | Slot is full once 3 teams are assigned |
+| Ground matches match ground | **HARD** | Team practices at the same ground as their weekend match |
+| Only teams with weekend matches | **HARD** | Only teams in `League.Matches` for that weekend get practice slots |
+| No same-division sharing | **SOFT** | Penalised in scoring (+5); relaxed automatically when needed so no team is left without a slot |
+| Even weekday distribution | **SOFT** | Per-team usage history steers assignments away from over-used weekdays |
 
 ### 17.4 Data Model
 
